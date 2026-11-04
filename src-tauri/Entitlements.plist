@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- macOS App Sandbox: the app can only read/write its own container
+         (~/Library/Containers/io.github.amitroy257.personalharness). -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- Outgoing HTTPS to the providers you configure + public ranking data. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- The local OpenAI-compatible API on 127.0.0.1. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

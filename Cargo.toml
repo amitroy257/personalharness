@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/harness-core", "crates/harness-cli", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/amitroy257/personalharness"
+
+[profile.release]
+strip = true
+codegen-units = 4
+lto = "thin"

@@ -1,0 +1,75 @@
+name: macOS app (DMG)
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: Build universal DMG
+    runs-on: macos-14
+    timeout-minutes: 75
+    env:
+      APP: target/universal-apple-darwin/release/bundle/macos/Personal Harness.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+
+      - name: Core tests on macOS
+        run: cargo test -p harness-core --locked
+
+      - name: Build app + DMG (Apple Silicon + Intel)
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+      - name: Show signature, sandbox entitlements and architectures
+        run: |
+          codesign -dv --verbose=2 "$APP" 2>&1 | head -20
+          codesign -d --entitlements - "$APP"
+          BIN="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS" | head -1)"
+          lipo -archs "$BIN"
+          ls -la target/universal-apple-darwin/release/bundle/dmg/
+
+      - name: Smoke test — launch the sandboxed app and call its local API
+        run: |
+          open "$APP"
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:4141/health; then echo; echo "app answered after ${i}s"; break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4141/health
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4141/v1/models)
+          echo "unauthenticated /v1/models -> $code"; test "$code" = "401"
+          CONTAINER="$HOME/Library/Containers/io.github.amitroy257.personalharness"
+          echo "Sandbox container contents:"; ls -la "$CONTAINER/Data/Library/Application Support/io.github.amitroy257.personalharness/"
+          TOKEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['server']['token'])" "$CONTAINER/Data/Library/Application Support/io.github.amitroy257.personalharness/settings.json")
+          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/models | head -c 400; echo
+          pkill -f "Personal Harness.app" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PersonalHarness-macOS-universal
+          path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Attach DMG to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/universal-apple-darwin/release/bundle/dmg/*.dmg

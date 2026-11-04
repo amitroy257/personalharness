@@ -1,0 +1,17 @@
+[package]
+name = "harness-cli"
+description = "Headless Personal Harness server (API + optional web UI)"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "harness-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+harness-core = { path = "../harness-core" }
+tokio = { version = "1.54.1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
