@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,7 +13,18 @@ use crate::util::now_ms;
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Record local changes for sync (on while signed in to a sync account).
+    track: AtomicBool,
 }
+
+/// Sync record kinds.
+pub const K_CONV: &str = "conv";
+pub const K_MSG: &str = "msg";
+pub const K_SET: &str = "set";
+
+/// One pending local change: (kind, id, mark). `mark` increases on every
+/// change so a change made while a push is in flight is not lost.
+pub type Dirty = (String, String, i64);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UsageRecord {
@@ -47,7 +59,7 @@ pub struct FamilyStats {
     pub prior_uses: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub title: String,
@@ -57,7 +69,7 @@ pub struct Conversation {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub conversation_id: String,
@@ -72,6 +84,41 @@ pub struct Message {
     pub completion_tokens: Option<i64>,
     pub duration_ms: Option<i64>,
     pub notes: String,
+    /// Last change (rating, notes); used for sync conflict resolution.
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+const MSG_COLS: &str = "id, conversation_id, role, content, reasoning, api_id, family, created_at, rating, prompt_tokens, completion_tokens, duration_ms, notes, updated_at";
+
+fn row_msg(r: &rusqlite::Row) -> rusqlite::Result<Message> {
+    Ok(Message {
+        id: r.get(0)?,
+        conversation_id: r.get(1)?,
+        role: r.get(2)?,
+        content: r.get(3)?,
+        reasoning: r.get(4)?,
+        api_id: r.get(5)?,
+        family: r.get(6)?,
+        created_at: r.get(7)?,
+        rating: r.get(8)?,
+        prompt_tokens: r.get(9)?,
+        completion_tokens: r.get(10)?,
+        duration_ms: r.get(11)?,
+        notes: r.get(12)?,
+        updated_at: r.get(13)?,
+    })
+}
+
+fn row_conv(r: &rusqlite::Row) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        model: r.get(2)?,
+        system_prompt: r.get(3)?,
+        created_at: r.get(4)?,
+        updated_at: r.get(5)?,
+    })
 }
 
 const SCHEMA: &str = r#"
@@ -125,7 +172,45 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sync_dirty (
+  kind TEXT NOT NULL,
+  id TEXT NOT NULL,
+  mark INTEGER NOT NULL,
+  PRIMARY KEY (kind, id)
+);
+CREATE TABLE IF NOT EXISTS sync_tombstones (
+  kind TEXT NOT NULL,
+  id TEXT NOT NULL,
+  deleted_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, id)
+);
 "#;
+
+/// Additive migrations for databases created by older versions.
+fn migrate(c: &Connection) -> rusqlite::Result<()> {
+    let has_col = c.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'updated_at'")?.exists([])?;
+    if !has_col {
+        c.execute_batch(
+            "ALTER TABLE messages ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0; UPDATE messages SET updated_at = created_at;",
+        )?;
+    }
+    Ok(())
+}
+
+fn mark_dirty(c: &Connection, kind: &str, id: &str) {
+    let _ = c.execute(
+        "INSERT INTO sync_dirty (kind, id, mark) VALUES (?1, ?2, 1) ON CONFLICT(kind, id) DO UPDATE SET mark = mark + 1",
+        params![kind, id],
+    );
+}
+
+fn tombstone(c: &Connection, kind: &str, id: &str, at: i64) {
+    let _ = c.execute(
+        "INSERT INTO sync_tombstones (kind, id, deleted_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(kind, id) DO UPDATE SET deleted_at = MAX(deleted_at, excluded.deleted_at)",
+        params![kind, id, at],
+    );
+}
 
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
@@ -147,13 +232,148 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        migrate(&conn)?;
+        Ok(Self { conn: Mutex::new(conn), track: AtomicBool::new(false) })
     }
 
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        migrate(&conn)?;
+        Ok(Self { conn: Mutex::new(conn), track: AtomicBool::new(false) })
+    }
+
+    // ---- sync change tracking ---------------------------------------------
+
+    pub fn set_tracking(&self, on: bool) {
+        self.track.store(on, Ordering::SeqCst);
+    }
+
+    pub fn tracking(&self) -> bool {
+        self.track.load(Ordering::SeqCst)
+    }
+
+    fn mark(&self, c: &Connection, kind: &str, id: &str) {
+        if self.tracking() {
+            mark_dirty(c, kind, id);
+        }
+    }
+
+    /// Mark a record changed (used for settings sections).
+    pub fn mark_changed(&self, kind: &str, id: &str) {
+        let c = self.conn.lock();
+        self.mark(&c, kind, id);
+    }
+
+    /// Record a local deletion so it propagates to other devices.
+    pub fn record_deletion(&self, kind: &str, id: &str) {
+        let c = self.conn.lock();
+        tombstone(&c, kind, id, now_ms());
+        self.mark(&c, kind, id);
+    }
+
+    /// Queue every local conversation and message for upload (first sign-in).
+    pub fn mark_all_dirty(&self) {
+        let c = self.conn.lock();
+        let _ = c.execute_batch(
+            "INSERT INTO sync_dirty (kind, id, mark) SELECT 'conv', id, 1 FROM conversations WHERE true
+               ON CONFLICT(kind, id) DO UPDATE SET mark = mark + 1;
+             INSERT INTO sync_dirty (kind, id, mark) SELECT 'msg', id, 1 FROM messages WHERE true
+               ON CONFLICT(kind, id) DO UPDATE SET mark = mark + 1;",
+        );
+    }
+
+    pub fn take_dirty(&self, limit: i64) -> Vec<Dirty> {
+        let c = self.conn.lock();
+        // settings and conversations first, so receivers see parents before children
+        let mut stmt = c
+            .prepare(
+                "SELECT kind, id, mark FROM sync_dirty
+                 ORDER BY CASE kind WHEN 'set' THEN 0 WHEN 'conv' THEN 1 ELSE 2 END, rowid LIMIT ?1",
+            )
+            .expect("prepare");
+        stmt.query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).expect("query").flatten().collect()
+    }
+
+    /// Drop pushed changes, unless they changed again while the push was in flight.
+    pub fn clear_dirty(&self, items: &[Dirty]) {
+        let c = self.conn.lock();
+        for (k, id, mark) in items {
+            let _ = c.execute("DELETE FROM sync_dirty WHERE kind = ?1 AND id = ?2 AND mark = ?3", params![k, id, mark]);
+        }
+    }
+
+    pub fn dirty_count(&self) -> i64 {
+        self.conn.lock().query_row("SELECT COUNT(*) FROM sync_dirty", [], |r| r.get(0)).unwrap_or(0)
+    }
+
+    pub fn clear_sync_state(&self) {
+        let _ = self.conn.lock().execute_batch("DELETE FROM sync_dirty; DELETE FROM sync_tombstones;");
+    }
+
+    pub fn tombstone_at(&self, kind: &str, id: &str) -> Option<i64> {
+        self.conn
+            .lock()
+            .query_row("SELECT deleted_at FROM sync_tombstones WHERE kind = ?1 AND id = ?2", params![kind, id], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn get_message(&self, id: &str) -> Option<Message> {
+        let c = self.conn.lock();
+        c.query_row(&format!("SELECT {MSG_COLS} FROM messages WHERE id = ?1"), params![id], row_msg).optional().ok().flatten()
+    }
+
+    // ---- applying records from other devices (never re-marked dirty) --------
+
+    pub fn upsert_conversation_remote(&self, conv: &Conversation) {
+        let c = self.conn.lock();
+        let _ = c.execute("DELETE FROM sync_tombstones WHERE kind = 'conv' AND id = ?1", params![conv.id]);
+        let _ = c.execute(
+            "INSERT INTO conversations (id, title, model, system_prompt, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET title = excluded.title, model = excluded.model,
+               system_prompt = excluded.system_prompt, created_at = excluded.created_at, updated_at = excluded.updated_at",
+            params![conv.id, conv.title, conv.model, conv.system_prompt, conv.created_at, conv.updated_at],
+        );
+    }
+
+    pub fn upsert_message_remote(&self, m: &Message) {
+        let c = self.conn.lock();
+        let _ = c.execute("DELETE FROM sync_tombstones WHERE kind = 'msg' AND id = ?1", params![m.id]);
+        // a message can arrive before its conversation: create a placeholder
+        // that the conversation record (newer updated_at) will overwrite
+        let _ = c.execute(
+            "INSERT OR IGNORE INTO conversations (id, title, model, system_prompt, created_at, updated_at) VALUES (?1, '…', 'auto', '', ?2, 0)",
+            params![m.conversation_id, m.created_at],
+        );
+        let _ = c.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, reasoning, api_id, family, created_at, rating, prompt_tokens, completion_tokens, duration_ms, notes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET content = excluded.content, reasoning = excluded.reasoning, rating = excluded.rating,
+               notes = excluded.notes, prompt_tokens = excluded.prompt_tokens, completion_tokens = excluded.completion_tokens,
+               duration_ms = excluded.duration_ms, updated_at = excluded.updated_at",
+            params![
+                m.id, m.conversation_id, m.role, m.content, m.reasoning, m.api_id, m.family, m.created_at, m.rating,
+                m.prompt_tokens, m.completion_tokens, m.duration_ms, m.notes, m.updated_at
+            ],
+        );
+    }
+
+    pub fn delete_remote(&self, kind: &str, id: &str, deleted_at: i64) {
+        let c = self.conn.lock();
+        tombstone(&c, kind, id, deleted_at);
+        match kind {
+            K_CONV => {
+                let _ = c.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id]);
+                let _ = c.execute("DELETE FROM conversations WHERE id = ?1", params![id]);
+            }
+            K_MSG => {
+                let _ = c.execute("DELETE FROM messages WHERE id = ?1", params![id]);
+            }
+            _ => {}
+        }
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
 
     // ---- usage -------------------------------------------------------------
@@ -320,6 +540,7 @@ impl Store {
             "INSERT INTO conversations (id, title, model, system_prompt, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![conv.id, conv.title, conv.model, conv.system_prompt, now, now],
         );
+        self.mark(&c, K_CONV, &conv.id);
         conv
     }
 
@@ -328,16 +549,7 @@ impl Store {
         c.query_row(
             "SELECT id, title, model, system_prompt, created_at, updated_at FROM conversations WHERE id = ?1",
             params![id],
-            |r| {
-                Ok(Conversation {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    model: r.get(2)?,
-                    system_prompt: r.get(3)?,
-                    created_at: r.get(4)?,
-                    updated_at: r.get(5)?,
-                })
-            },
+            row_conv,
         )
         .optional()
         .ok()
@@ -351,19 +563,7 @@ impl Store {
                 "SELECT id, title, model, system_prompt, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT ?1",
             )
             .expect("prepare");
-        stmt.query_map(params![limit], |r| {
-            Ok(Conversation {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                model: r.get(2)?,
-                system_prompt: r.get(3)?,
-                created_at: r.get(4)?,
-                updated_at: r.get(5)?,
-            })
-        })
-        .expect("query")
-        .flatten()
-        .collect()
+        stmt.query_map(params![limit], row_conv).expect("query").flatten().collect()
     }
 
     pub fn update_conversation(&self, id: &str, title: Option<&str>, model: Option<&str>, system_prompt: Option<&str>) {
@@ -379,10 +579,24 @@ impl Store {
             let _ = c.execute("UPDATE conversations SET system_prompt = ?2 WHERE id = ?1", params![id, s]);
         }
         let _ = c.execute("UPDATE conversations SET updated_at = ?2 WHERE id = ?1", params![id, now]);
+        self.mark(&c, K_CONV, id);
     }
 
     pub fn delete_conversation(&self, id: &str) {
         let c = self.conn.lock();
+        if self.tracking() {
+            let now = now_ms();
+            let msg_ids: Vec<String> = c
+                .prepare("SELECT id FROM messages WHERE conversation_id = ?1")
+                .and_then(|mut st| st.query_map(params![id], |r| r.get(0)).map(|rows| rows.flatten().collect()))
+                .unwrap_or_default();
+            for mid in msg_ids {
+                tombstone(&c, K_MSG, &mid, now);
+                mark_dirty(&c, K_MSG, &mid);
+            }
+            tombstone(&c, K_CONV, id, now);
+            mark_dirty(&c, K_CONV, id);
+        }
         let _ = c.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id]);
         let _ = c.execute("DELETE FROM conversations WHERE id = ?1", params![id]);
         // Deleted text must not survive in the write-ahead log either.
@@ -416,11 +630,23 @@ impl Store {
             completion_tokens: tokens.1,
             duration_ms,
             notes: notes.to_string(),
+            updated_at: 0,
         };
         let c = self.conn.lock();
+        // Strictly increasing timestamps within a conversation give every
+        // device the same message order (insertion order differs across devices).
+        let last: i64 = c
+            .query_row(
+                "SELECT COALESCE(MAX(created_at), 0) FROM messages WHERE conversation_id = ?1",
+                params![conversation_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let created_at = m.created_at.max(last + 1);
+        let m = Message { created_at, updated_at: created_at, ..m };
         let _ = c.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, reasoning, api_id, family, created_at, rating, prompt_tokens, completion_tokens, duration_ms, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12)",
+            "INSERT INTO messages (id, conversation_id, role, content, reasoning, api_id, family, created_at, rating, prompt_tokens, completion_tokens, duration_ms, notes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?8)",
             params![
                 m.id,
                 m.conversation_id,
@@ -437,44 +663,32 @@ impl Store {
             ],
         );
         let _ = c.execute("UPDATE conversations SET updated_at = ?2 WHERE id = ?1", params![conversation_id, m.created_at]);
+        self.mark(&c, K_MSG, &m.id);
+        self.mark(&c, K_CONV, conversation_id);
         m
     }
 
     pub fn messages(&self, conversation_id: &str) -> Vec<Message> {
         let c = self.conn.lock();
         let mut stmt = c
-            .prepare(
-                "SELECT id, conversation_id, role, content, reasoning, api_id, family, created_at, rating, prompt_tokens, completion_tokens, duration_ms, notes
-                 FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC, rowid ASC",
-            )
+            .prepare(&format!("SELECT {MSG_COLS} FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC, rowid ASC"))
             .expect("prepare");
-        stmt.query_map(params![conversation_id], |r| {
-            Ok(Message {
-                id: r.get(0)?,
-                conversation_id: r.get(1)?,
-                role: r.get(2)?,
-                content: r.get(3)?,
-                reasoning: r.get(4)?,
-                api_id: r.get(5)?,
-                family: r.get(6)?,
-                created_at: r.get(7)?,
-                rating: r.get(8)?,
-                prompt_tokens: r.get(9)?,
-                completion_tokens: r.get(10)?,
-                duration_ms: r.get(11)?,
-                notes: r.get(12)?,
-            })
-        })
-        .expect("query")
-        .flatten()
-        .collect()
+        stmt.query_map(params![conversation_id], row_msg).expect("query").flatten().collect()
     }
 
     pub fn rate_message(&self, id: &str, rating: i64) -> bool {
         let c = self.conn.lock();
-        c.execute("UPDATE messages SET rating = ?2 WHERE id = ?1 AND role = 'assistant'", params![id, rating.clamp(-1, 1)])
+        let ok = c
+            .execute(
+                "UPDATE messages SET rating = ?2, updated_at = ?3 WHERE id = ?1 AND role = 'assistant'",
+                params![id, rating.clamp(-1, 1), now_ms()],
+            )
             .map(|n| n > 0)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.mark(&c, K_MSG, id);
+        }
+        ok
     }
 
     // ---- kv cache ----------------------------------------------------------
@@ -500,11 +714,30 @@ impl Store {
 
     pub fn wipe(&self, what: &str) -> anyhow::Result<()> {
         let c = self.conn.lock();
+        if self.tracking() && what == "chats" {
+            // deleting all chats while signed in deletes them on every device
+            c.execute_batch(
+                "INSERT INTO sync_tombstones (kind, id, deleted_at) SELECT 'msg', id, strftime('%s','now')*1000 FROM messages WHERE true
+                   ON CONFLICT(kind, id) DO UPDATE SET deleted_at = excluded.deleted_at;
+                 INSERT INTO sync_tombstones (kind, id, deleted_at) SELECT 'conv', id, strftime('%s','now')*1000 FROM conversations WHERE true
+                   ON CONFLICT(kind, id) DO UPDATE SET deleted_at = excluded.deleted_at;
+                 INSERT INTO sync_dirty (kind, id, mark) SELECT kind, id, 1 FROM sync_tombstones WHERE kind IN ('msg', 'conv')
+                   ON CONFLICT(kind, id) DO UPDATE SET mark = mark + 1;",
+            )?;
+        }
+        if self.tracking() && what == "usage" {
+            c.execute_batch(
+                "INSERT INTO sync_dirty (kind, id, mark) SELECT 'msg', id, 1 FROM messages WHERE rating != 0
+                   ON CONFLICT(kind, id) DO UPDATE SET mark = mark + 1;",
+            )?;
+        }
         match what {
             "chats" => c.execute_batch("DELETE FROM messages; DELETE FROM conversations;")?,
-            "usage" => c.execute_batch("DELETE FROM usage; UPDATE messages SET rating = 0;")?,
+            "usage" => c.execute_batch("DELETE FROM usage; UPDATE messages SET rating = 0, updated_at = strftime('%s','now')*1000 WHERE rating != 0;")?,
             "cache" => c.execute_batch("DELETE FROM kv;")?,
-            "all" => c.execute_batch("DELETE FROM messages; DELETE FROM conversations; DELETE FROM usage; DELETE FROM kv;")?,
+            "all" => c.execute_batch(
+                "DELETE FROM messages; DELETE FROM conversations; DELETE FROM usage; DELETE FROM kv; DELETE FROM sync_dirty; DELETE FROM sync_tombstones;",
+            )?,
             other => anyhow::bail!("unknown wipe target: {other}"),
         }
         // secure_delete zeroes freed pages; VACUUM rebuilds the file; the

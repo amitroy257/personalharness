@@ -31,8 +31,51 @@ fn e2s<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Commands that change synced data trigger a (debounced) sync afterwards.
+const MUTATING: &[&str] = &[
+    "update_settings",
+    "save_provider",
+    "add_custom_provider",
+    "remove_custom_provider",
+    "set_model_hidden",
+    "delete_conversation",
+    "update_conversation",
+    "rate_message",
+    "wipe_data",
+];
+
 pub async fn call(h: &Arc<Harness>, name: &str, args: Value) -> R {
+    let out = dispatch(h, name, args).await;
+    if out.is_ok() && MUTATING.contains(&name) {
+        h.request_sync();
+    }
+    out
+}
+
+async fn dispatch(h: &Arc<Harness>, name: &str, args: Value) -> R {
     match name {
+        // ---- account & end-to-end encrypted sync
+        "sync_status" => Ok(crate::sync::status(h)),
+        "sync_signup" => {
+            crate::sync::signup(
+                h,
+                &req_str(&args, "server")?,
+                &req_str(&args, "email")?,
+                &req_str(&args, "password")?,
+                &arg_str(&args, "signup_code").unwrap_or_default(),
+            )
+            .await
+        }
+        "sync_login" => {
+            crate::sync::login(h, &req_str(&args, "server")?, &req_str(&args, "email")?, &req_str(&args, "password")?).await
+        }
+        "sync_logout" => crate::sync::logout(h).await,
+        "sync_now" => {
+            let r = crate::sync::sync_now(h).await?;
+            h.invalidate_stats();
+            Ok(json!({"report": r, "status": crate::sync::status(h)}))
+        }
+        "sync_delete_account" => crate::sync::delete_account(h, &req_str(&args, "password")?).await,
         "overview" => overview(h).await,
         "get_settings" => Ok(settings_view(h)),
         "update_settings" => update_settings(h, &args).await,
@@ -133,6 +176,11 @@ pub async fn call(h: &Arc<Harness>, name: &str, args: Value) -> R {
         }
         "wipe_data" => {
             let what = arg_str(&args, "what").unwrap_or_else(|| "all".into());
+            if what == "all" {
+                // resetting this device signs it out first, so nothing is
+                // deleted on your other devices
+                let _ = crate::sync::logout(h).await;
+            }
             h.store.wipe(&what).map_err(e2s)?;
             h.invalidate_stats();
             if what == "all" {
@@ -595,6 +643,7 @@ pub async fn send_message(h: &Arc<Harness>, args: Value, tx: UnboundedSender<Cha
         }
         notes.push(format!("Stream ended early: {e}"));
     }
+    h.request_sync();
     let usage = out.usage_record(&cand, "chat");
     let msg = h.store.add_message(
         &conv.id,

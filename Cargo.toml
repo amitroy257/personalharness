@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-core", "crates/harness-cli", "src-tauri"]
+members = ["crates/harness-core", "crates/harness-cli", "crates/harness-sync-server", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,3 +11,11 @@ repository = "https://github.com/amitroy257/personalharness"
 strip = true
 codegen-units = 4
 lto = "thin"
+
+# Key derivation is deliberately expensive; keep it fast in debug/test builds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3

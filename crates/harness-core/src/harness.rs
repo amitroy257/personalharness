@@ -57,6 +57,12 @@ pub struct Harness {
     stats_cache: Mutex<Option<(std::time::Instant, UsageStats)>>,
     /// True when running inside the desktop app (vs. the headless server).
     desktop: std::sync::atomic::AtomicBool,
+    // ---- end-to-end encrypted sync
+    sync_path: PathBuf,
+    sync: Mutex<Option<crate::sync::SyncState>>,
+    pub sync_notify: tokio::sync::Notify,
+    pub sync_lock: tokio::sync::Mutex<()>,
+    sync_kdf: Mutex<crate::sync::Kdf>,
 }
 
 type UsageStats = Arc<(HashMap<String, crate::store::FamilyStats>, HashMap<String, (i64, i64, Option<f64>)>)>;
@@ -94,7 +100,16 @@ impl Harness {
             .pool_idle_timeout(Duration::from_secs(90))
             .build()?;
 
+        let sync_path = data_dir.join("sync.json");
+        let sync = Some(crate::sync::SyncState::load(&sync_path)).filter(|s| s.signed_in());
+        store.set_tracking(sync.is_some());
+
         Ok(Arc::new(Self {
+            sync_path,
+            sync: Mutex::new(sync),
+            sync_notify: tokio::sync::Notify::new(),
+            sync_lock: tokio::sync::Mutex::new(()),
+            sync_kdf: Mutex::new(crate::sync::Kdf::default()),
             data_dir: data_dir.to_path_buf(),
             settings_path,
             settings: RwLock::new(settings),
@@ -132,9 +147,128 @@ impl Harness {
 
     pub fn update_settings<R>(&self, f: impl FnOnce(&mut Settings) -> R) -> anyhow::Result<R> {
         let mut s = self.settings.write();
+        let before = crate::sync::settings_sections(&s);
         let r = f(&mut s);
         s.save(&self.settings_path)?;
+        let after = crate::sync::settings_sections(&s);
+        drop(s);
+        // record which synced sections changed, so other devices receive them
+        let now = now_ms();
+        for (id, v) in &after {
+            if before.get(id) != Some(v) {
+                self.store.kv_set(&format!("set_ts:{id}"), &now.to_string());
+                self.store.mark_changed(crate::store::K_SET, id);
+            }
+        }
+        for id in before.keys().filter(|k| !after.contains_key(*k)) {
+            self.store.record_deletion(crate::store::K_SET, id);
+        }
+        if before != after {
+            self.request_sync();
+        }
         Ok(r)
+    }
+
+    // ---- sync plumbing -----------------------------------------------------------
+
+    pub fn sync_state(&self) -> Option<crate::sync::SyncState> {
+        self.sync.lock().clone()
+    }
+
+    pub fn set_sync_state(&self, st: Option<crate::sync::SyncState>) -> Result<(), String> {
+        match &st {
+            Some(s) => s.save(&self.sync_path)?,
+            None => {
+                let _ = std::fs::remove_file(&self.sync_path);
+            }
+        }
+        *self.sync.lock() = st;
+        Ok(())
+    }
+
+    /// Ask the background loop to sync soon (debounced). No-op when signed out.
+    pub fn request_sync(&self) {
+        if self.sync.lock().as_ref().map(|s| s.signed_in()).unwrap_or(false) {
+            self.sync_notify.notify_one();
+        }
+    }
+
+    pub fn sync_kdf(&self) -> crate::sync::Kdf {
+        self.sync_kdf.lock().clone()
+    }
+
+    /// Tests use cheaper key derivation; production keeps the strong default.
+    pub fn set_sync_kdf(&self, k: crate::sync::Kdf) {
+        *self.sync_kdf.lock() = k;
+    }
+
+    fn section_ts(&self, id: &str) -> i64 {
+        self.store.kv_get(&format!("set_ts:{id}")).and_then(|(v, _)| v.parse().ok()).unwrap_or(0)
+    }
+
+    /// Current value and last-change time of a synced settings section.
+    pub fn settings_section(&self, id: &str) -> Option<(serde_json::Value, i64)> {
+        let v = crate::sync::settings_sections(&self.settings.read()).remove(id)?;
+        Some((v, self.section_ts(id)))
+    }
+
+    /// On sign-in: upload settings the user actually configured. Untouched
+    /// defaults keep timestamp 0 so an existing account's settings win.
+    pub fn mark_all_settings_dirty(&self) {
+        let current = crate::sync::settings_sections(&self.settings.read());
+        let defaults = crate::sync::settings_sections(&Settings::default());
+        let now = now_ms();
+        for (id, v) in current {
+            let has_ts = self.store.kv_get(&format!("set_ts:{id}")).is_some();
+            if defaults.get(&id) == Some(&v) && !has_ts {
+                continue;
+            }
+            if !has_ts {
+                self.store.kv_set(&format!("set_ts:{id}"), &now.to_string());
+            }
+            self.store.mark_changed(crate::store::K_SET, &id);
+        }
+    }
+
+    /// Apply a settings section received from another device (not re-synced).
+    pub fn apply_settings_section_remote(&self, id: &str, data: &serde_json::Value, at: i64) -> bool {
+        let mut s = self.settings.write();
+        let ok = match id.split_once(':') {
+            Some(("provider", pid)) => serde_json::from_value(data.clone()).map(|p| {
+                s.providers.insert(pid.to_string(), p);
+            }),
+            Some(("custom", cid)) => serde_json::from_value::<crate::settings::CustomProvider>(data.clone()).map(|c| {
+                s.custom_providers.retain(|x| x.id != cid);
+                s.custom_providers.push(c);
+            }),
+            _ => match id {
+                "ranking" => serde_json::from_value(data.clone()).map(|v| s.ranking = v),
+                "chat" => serde_json::from_value(data.clone()).map(|v| s.chat = v),
+                "routing" => serde_json::from_value(data.clone()).map(|v| s.routing = v),
+                "hidden" => serde_json::from_value(data.clone()).map(|v| s.hidden_models = v),
+                _ => return false,
+            },
+        };
+        if ok.is_err() || s.save(&self.settings_path).is_err() {
+            return false;
+        }
+        drop(s);
+        self.store.kv_set(&format!("set_ts:{id}"), &at.to_string());
+        self.invalidate_stats();
+        true
+    }
+
+    pub fn delete_settings_section_remote(&self, id: &str, at: i64) {
+        let mut s = self.settings.write();
+        match id.split_once(':') {
+            Some(("provider", pid)) => {
+                s.providers.remove(pid);
+            }
+            Some(("custom", cid)) => s.custom_providers.retain(|x| x.id != cid),
+            _ => return,
+        }
+        let _ = s.save(&self.settings_path);
+        let _ = at;
     }
 
     // ---- catalogs --------------------------------------------------------------
@@ -343,6 +477,7 @@ impl Harness {
 
     /// Periodically refresh stale model lists and public signals.
     pub fn spawn_background(self: &Arc<Self>) {
+        crate::sync::spawn_loop(self);
         let h = self.clone();
         tokio::spawn(async move {
             loop {

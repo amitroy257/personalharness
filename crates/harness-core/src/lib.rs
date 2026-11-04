@@ -17,6 +17,7 @@ pub mod settings;
 pub mod signals;
 pub mod sse;
 pub mod store;
+pub mod sync;
 pub mod util;
 
 pub use harness::Harness;
