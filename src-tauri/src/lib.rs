@@ -1,15 +1,14 @@
-//! Personal Harness desktop app (Tauri, macOS + Windows). The window is the UI;
-//! the router and local API live in `harness-core` and keep running in the
-//! menu bar (macOS) / system tray (Windows) when the window is closed.
+//! Personal Harness app (Tauri): macOS, Windows and Android. The window is the
+//! UI; the router, local API and sync engine live in `harness-core`. On the
+//! desktop the app keeps running in the menu bar (macOS) / system tray
+//! (Windows) when the window is closed.
 
 use std::sync::Arc;
 
 use harness_core::{commands, Harness};
 use serde_json::Value;
 use tauri::ipc::Channel;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, Runtime, State, WindowEvent};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 #[tauri::command]
 async fn call(state: State<'_, Arc<Harness>>, name: String, args: Value) -> Result<Value, String> {
@@ -27,6 +26,7 @@ async fn chat(state: State<'_, Arc<Harness>>, args: Value, on_event: Channel<Val
     task.await.map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -35,7 +35,11 @@ fn show_main<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+#[cfg(desktop)]
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
     let port = app.state::<Arc<Harness>>().settings().server.port;
     let show = MenuItem::with_id(app, "show", "Open Personal Harness", true, None::<&str>)?;
     let info = MenuItem::with_id(app, "info", format!("Local API: http://127.0.0.1:{port}/v1"), false, None::<&str>)?;
@@ -78,15 +82,30 @@ pub fn run() {
     // The standard app menu (Edit → Copy/Paste shortcuts etc.) belongs to macOS;
     // on Windows it would add a menu bar to the window.
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(Menu::default);
+    let builder = builder.menu(tauri::menu::Menu::default);
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        // Keep running in the menu bar / tray so the local API stays available.
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    });
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // macOS (sandboxed): ~/Library/Containers/<id>/Data/Library/Application Support/<id>
             // Windows: %LOCALAPPDATA%\<id> (local, never roamed to other machines)
+            // Android: the app's private storage (/data/user/0/<id>/...)
             let dir = app.path().app_local_data_dir()?;
+            let first_run = !dir.join("settings.json").exists();
             let h = Harness::open(&dir)?;
             h.set_desktop(true);
+            if cfg!(mobile) && first_run {
+                // Other phone apps rarely need an OpenAI-compatible endpoint;
+                // keep the port closed unless the user turns it on.
+                h.update_settings(|s| s.server.enabled = false)?;
+            }
             app.manage(h.clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = h.start_server().await {
@@ -94,17 +113,11 @@ pub fn run() {
                 }
                 h.spawn_background();
             });
+            #[cfg(desktop)]
             if let Err(e) = build_tray(app) {
                 eprintln!("tray icon unavailable: {e}");
             }
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            // Keep running in the menu bar / tray so the local API stays available.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
         })
         .invoke_handler(tauri::generate_handler![call, chat])
         .build(tauri::generate_context!())

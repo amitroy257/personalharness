@@ -41,9 +41,10 @@ export function pct(n: number | null | undefined): string {
   return n == null ? "—" : `${Math.round(n * 100)}%`;
 }
 
-/** "this Mac" / "this PC" / "this computer" for UI copy. */
+/** "this phone" / "this Mac" / "this PC" / "this computer" for UI copy. */
 export const DEVICE: string = (() => {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/Android|iPhone|iPad/i.test(ua)) return "this phone";
   if (/Windows/i.test(ua)) return "this PC";
   if (/Macintosh|Mac OS X/i.test(ua)) return "this Mac";
   return "this computer";

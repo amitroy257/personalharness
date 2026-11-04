@@ -9,16 +9,18 @@ import ModelsPage from "./pages/Models";
 import ProvidersPage from "./pages/Providers";
 import ApiPage from "./pages/ApiPage";
 import SettingsPage from "./pages/Settings";
+import SyncPage from "./pages/Sync";
 
-export type Page = "chat" | "rankings" | "models" | "providers" | "api" | "settings";
+export type Page = "chat" | "rankings" | "models" | "providers" | "api" | "sync" | "settings";
 
-const NAV: { id: Page; label: string; icon: () => ReactElement }[] = [
-  { id: "chat", label: "Chat", icon: Icon.chat },
-  { id: "rankings", label: "Rankings", icon: Icon.trophy },
-  { id: "models", label: "Models", icon: Icon.cube },
-  { id: "providers", label: "Providers", icon: Icon.key },
-  { id: "api", label: "Local API", icon: Icon.plug },
-  { id: "settings", label: "Privacy & Settings", icon: Icon.shield },
+const NAV: { id: Page; label: string; short: string; icon: () => ReactElement }[] = [
+  { id: "chat", label: "Chat", short: "Chat", icon: Icon.chat },
+  { id: "rankings", label: "Rankings", short: "Ranks", icon: Icon.trophy },
+  { id: "models", label: "Models", short: "Models", icon: Icon.cube },
+  { id: "providers", label: "Providers", short: "Keys", icon: Icon.key },
+  { id: "api", label: "Local API", short: "API", icon: Icon.plug },
+  { id: "sync", label: "Account & Sync", short: "Sync", icon: Icon.cloud },
+  { id: "settings", label: "Privacy & Settings", short: "Privacy", icon: Icon.shield },
 ];
 
 export interface Nav {
@@ -27,10 +29,20 @@ export interface Nav {
   refreshOverview: () => void;
 }
 
+interface SyncInfo {
+  signed_in: boolean;
+  email?: string;
+  last_sync_at?: number;
+  last_error?: string | null;
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [chatModel, setChatModel] = useState<string | null>(null);
+  const [sync, setSync] = useState<SyncInfo | null>(null);
+  // bumps when another device's changes arrive, so open pages reload
+  const [dataVersion, setDataVersion] = useState(0);
 
   const refreshOverview = useCallback(() => {
     call<Overview>("overview").then(setOverview).catch(() => {});
@@ -41,6 +53,22 @@ export default function App() {
     const t = window.setInterval(refreshOverview, 20000);
     return () => window.clearInterval(t);
   }, [refreshOverview]);
+
+  useEffect(() => {
+    let last = 0;
+    const poll = () =>
+      call<SyncInfo>("sync_status")
+        .then((st) => {
+          setSync(st);
+          const at = st.last_sync_at ?? 0;
+          if (last && at !== last) setDataVersion((v) => v + 1);
+          last = at;
+        })
+        .catch(() => {});
+    poll();
+    const t = window.setInterval(poll, 10000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (overview && overview.providers_configured === 0 && page === "chat" && !sessionStorage.getItem("ph_seen_onboarding")) {
@@ -73,7 +101,8 @@ export default function App() {
         {NAV.map((n) => (
           <button key={n.id} className={`nav-item ${page === n.id ? "active" : ""}`} onClick={() => setPage(n.id)}>
             <n.icon />
-            {n.label}
+            <span className="lbl-long">{n.label}</span>
+            <span className="lbl-short">{n.short}</span>
           </button>
         ))}
         <div className="spacer" />
@@ -85,15 +114,24 @@ export default function App() {
           <div>
             {overview?.models_available ?? 0} models · {overview?.providers_configured ?? 0} providers
           </div>
-          <div>🔒 Data stays on {DEVICE}</div>
+          <div>
+            {sync?.signed_in ? (
+              <a onClick={() => setPage("sync")}>{sync.last_error ? "⚠️ Sync error" : "☁️ Synced (end-to-end encrypted)"}</a>
+            ) : (
+              <>🔒 Data stays on {DEVICE}</>
+            )}
+          </div>
         </div>
       </aside>
       <main className="main">
-        {page === "chat" && <ChatPage nav={nav} overview={overview} forcedModel={chatModel} onForcedModelUsed={() => setChatModel(null)} />}
+        {page === "chat" && (
+          <ChatPage nav={nav} overview={overview} forcedModel={chatModel} onForcedModelUsed={() => setChatModel(null)} dataVersion={dataVersion} />
+        )}
         {page === "rankings" && <RankingsPage nav={nav} />}
         {page === "models" && <ModelsPage nav={nav} />}
         {page === "providers" && <ProvidersPage nav={nav} />}
         {page === "api" && <ApiPage nav={nav} />}
+        {page === "sync" && <SyncPage nav={nav} onChanged={() => setDataVersion((v) => v + 1)} />}
         {page === "settings" && <SettingsPage nav={nav} />}
       </main>
     </div>

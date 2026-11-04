@@ -1,6 +1,18 @@
 use std::io::Write;
 use std::path::Path;
 
+/// Every HTTP client in the app is built here. On Android, certificates are
+/// verified against the bundled Mozilla root store: the OS verifier would need
+/// JNI initialisation from Java, and failing open is not an option.
+pub fn http_builder() -> reqwest::ClientBuilder {
+    let b = reqwest::Client::builder();
+    #[cfg(target_os = "android")]
+    let b = b.tls_certs_only(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().filter_map(|c| reqwest::Certificate::from_der(c.as_ref()).ok()),
+    );
+    b
+}
+
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

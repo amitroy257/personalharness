@@ -36,6 +36,12 @@ export const Icon = {
       <path d="m9 12 2 2 4-4" />
     </svg>
   ),
+  cloud: () => (
+    <svg viewBox="0 0 24 24" {...P}>
+      <path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5H7Z" />
+      <path d="m9.5 13.5 2 2 3.5-3.5" />
+    </svg>
+  ),
 };
 
 type Toast = (msg: string) => void;

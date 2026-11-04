@@ -63,6 +63,9 @@ pub struct Harness {
     pub sync_notify: tokio::sync::Notify,
     pub sync_lock: tokio::sync::Mutex<()>,
     sync_kdf: Mutex<crate::sync::Kdf>,
+    /// Providers whose settings arrived from another device and whose model
+    /// lists must be fetched on this device.
+    pending_catalogs: Mutex<std::collections::BTreeSet<String>>,
 }
 
 type UsageStats = Arc<(HashMap<String, crate::store::FamilyStats>, HashMap<String, (i64, i64, Option<f64>)>)>;
@@ -95,7 +98,7 @@ impl Harness {
             .filter(|s| !s.arena_text.is_empty() || !s.arena_code.is_empty())
             .unwrap_or_else(Signals::baseline);
 
-        let http = reqwest::Client::builder()
+        let http = crate::util::http_builder()
             .connect_timeout(Duration::from_secs(15))
             .pool_idle_timeout(Duration::from_secs(90))
             .build()?;
@@ -110,6 +113,7 @@ impl Harness {
             sync_notify: tokio::sync::Notify::new(),
             sync_lock: tokio::sync::Mutex::new(()),
             sync_kdf: Mutex::new(crate::sync::Kdf::default()),
+            pending_catalogs: Mutex::new(Default::default()),
             data_dir: data_dir.to_path_buf(),
             settings_path,
             settings: RwLock::new(settings),
@@ -236,10 +240,12 @@ impl Harness {
         let ok = match id.split_once(':') {
             Some(("provider", pid)) => serde_json::from_value(data.clone()).map(|p| {
                 s.providers.insert(pid.to_string(), p);
+                self.pending_catalogs.lock().insert(pid.to_string());
             }),
             Some(("custom", cid)) => serde_json::from_value::<crate::settings::CustomProvider>(data.clone()).map(|c| {
                 s.custom_providers.retain(|x| x.id != cid);
                 s.custom_providers.push(c);
+                self.pending_catalogs.lock().insert(cid.to_string());
             }),
             _ => match id {
                 "ranking" => serde_json::from_value(data.clone()).map(|v| s.ranking = v),
@@ -256,6 +262,17 @@ impl Harness {
         self.store.kv_set(&format!("set_ts:{id}"), &at.to_string());
         self.invalidate_stats();
         true
+    }
+
+    /// Fetch model lists for providers configured on another device.
+    pub async fn refresh_synced_catalogs(&self) {
+        let ids: Vec<String> = std::mem::take(&mut *self.pending_catalogs.lock()).into_iter().collect();
+        for id in ids {
+            if let Err(e) = self.refresh_provider(&id).await {
+                tracing::info!("model list for synced provider {id}: {e}");
+            }
+        }
+        self.invalidate_stats();
     }
 
     pub fn delete_settings_section_remote(&self, id: &str, at: i64) {
@@ -555,6 +572,8 @@ pub fn protection_note() -> &'static str {
         } else {
             "Stored in your user Library with owner-only permissions (headless mode is not sandboxed)."
         }
+    } else if cfg!(target_os = "android") {
+        "Android app sandbox: data is in this app's private storage, which other apps cannot read."
     } else if cfg!(windows) {
         "Stored in your Windows profile (%LOCALAPPDATA%, never roamed to other machines); API keys are encrypted with Windows DPAPI so only your Windows account can read them."
     } else {

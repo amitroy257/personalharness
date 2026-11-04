@@ -130,11 +130,13 @@ export default function ChatPage({
   overview,
   forcedModel,
   onForcedModelUsed,
+  dataVersion,
 }: {
   nav: Nav;
   overview: Overview | null;
   forcedModel: string | null;
   onForcedModelUsed: () => void;
+  dataVersion: number;
 }) {
   const toast = useToast();
   const [convs, setConvs] = useState<Conversation[]>([]);
@@ -148,6 +150,7 @@ export default function ChatPage({
   const scroller = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef<string | null>(null);
+  const [drawer, setDrawer] = useState(false);
 
   const loadConvs = useCallback(() => call<Conversation[]>("list_conversations").then(setConvs).catch(() => {}), []);
 
@@ -175,6 +178,19 @@ export default function ChatPage({
     }
   }, [forcedModel, onForcedModelUsed]);
 
+  // changes synced from another device: refresh the list and the open chat
+  useEffect(() => {
+    if (!dataVersion) return;
+    loadConvs();
+    const id = activeRef.current;
+    if (id && !busy) {
+      call<{ messages: Message[] }>("get_conversation", { id })
+        .then((r) => setMessages(r.messages))
+        .catch(() => newChatRef.current());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataVersion]);
+
   useEffect(() => {
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -182,6 +198,7 @@ export default function ChatPage({
 
   const openConv = async (c: Conversation) => {
     if (busy) return;
+    setDrawer(false);
     setActiveId(c.id);
     activeRef.current = c.id;
     setModel(c.model || "auto");
@@ -191,11 +208,15 @@ export default function ChatPage({
 
   const newChat = () => {
     if (busy) return;
+    setDrawer(false);
     setActiveId(null);
     activeRef.current = null;
     setMessages([]);
     textarea.current?.focus();
   };
+
+  const newChatRef = useRef(newChat);
+  newChatRef.current = newChat;
 
   const changeModel = (v: string) => {
     setModel(v);
@@ -265,7 +286,8 @@ export default function ChatPage({
   const noProviders = overview && overview.providers_configured === 0;
 
   return (
-    <div className="chat">
+    <div className={`chat ${drawer ? "drawer-open" : ""}`}>
+      {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} />}
       <div className="conv-list">
         <button className="btn primary" onClick={newChat} style={{ marginBottom: 8 }}>
           + New chat
@@ -292,7 +314,10 @@ export default function ChatPage({
       </div>
       <div className="chat-main">
         <div className="chat-top">
-          <span className="muted small">Model</span>
+          <button className="btn sm mobile-only" onClick={() => setDrawer(true)} aria-label="Show chats">
+            ☰ Chats
+          </button>
+          <span className="muted small desktop-only">Model</span>
           <ModelPicker value={model} onChange={changeModel} ranked={ranked} />
           <button className="btn sm" onClick={() => nav.go("rankings")}>
             Why this model?
@@ -357,7 +382,7 @@ export default function ChatPage({
               ref={textarea}
               className="input"
               rows={1}
-              placeholder="Message… (Enter to send, Shift+Enter for a new line)"
+              placeholder={window.innerWidth < 760 ? "Message…" : "Message… (Enter to send, Shift+Enter for a new line)"}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);

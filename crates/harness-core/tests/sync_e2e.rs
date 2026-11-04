@@ -103,6 +103,7 @@ async fn laptop_and_phone_stay_in_sync_and_server_sees_only_ciphertext() {
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].content, "MARKER-CHAT-a1b2 my private thought");
     assert_eq!(phone.settings().provider("groq").api_key, "gsk-LAPTOP-SECRET-KEY-123", "API keys sync too");
+    assert!(phone.catalog("groq").is_some(), "a synced provider's model list is fetched on the new device");
     assert_ne!(phone.settings().server.token, laptop.settings().server.token, "the local API token stays per device");
 
     // --- rate on the phone -> the laptop sees it -----------------------------------------

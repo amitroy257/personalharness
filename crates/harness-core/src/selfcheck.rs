@@ -125,6 +125,24 @@ pub async fn run(h: &Harness) -> Vec<Check> {
             Status::Info,
             "Windows desktop apps have no App-Sandbox equivalent; protection is the per-user profile plus DPAPI encryption of secrets",
         ));
+    } else if cfg!(target_os = "android") {
+        // Android runs every app as its own Linux user with a private data directory.
+        let private = data_dir.starts_with("/data/");
+        out.push(check(
+            "os_sandbox",
+            "Android app sandbox (private app storage)",
+            if private { Status::Pass } else { Status::Fail },
+            format!("Data folder: {}", data_dir.display()),
+        ));
+        for (id, label, dir) in [
+            ("escape_other_apps", "Cannot list other apps' private data", "/data/data"),
+            ("escape_read_app", "Cannot read another app's files", "/data/data/com.android.providers.settings"),
+        ] {
+            out.push(match std::fs::read_dir(dir).map(|d| d.count()) {
+                Ok(n) => check(id, label, Status::Fail, format!("listed {n} entries in {dir}")),
+                Err(e) => check(id, label, Status::Pass, format!("{dir}: {e}")),
+            });
+        }
     } else {
         out.push(check("os_sandbox", "OS sandbox", Status::Info, "Linux/headless: protected by owner-only permissions"));
     }
@@ -156,6 +174,8 @@ pub async fn run(h: &Harness) -> Vec<Check> {
             Status::Info,
             if macos_sandbox_active() {
                 "Stored in the sandbox container (other apps cannot read it), file mode 0600"
+            } else if cfg!(target_os = "android") {
+                "Stored in private app storage (other apps cannot read it), file mode 0600"
             } else {
                 "Stored with owner-only file permissions"
             },
@@ -213,7 +233,7 @@ pub async fn run(h: &Harness) -> Vec<Check> {
                 "bound to 127.0.0.1 (no LAN address)",
             ),
         });
-        let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build();
+        let http = crate::util::http_builder().no_proxy().timeout(Duration::from_secs(5)).build();
         if let Ok(http) = http {
             let url = format!("http://127.0.0.1:{port}/v1/models");
             let no_token = http.get(&url).send().await.map(|r| r.status().as_u16()).unwrap_or(0);

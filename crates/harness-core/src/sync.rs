@@ -391,6 +391,7 @@ pub struct Report {
 pub async fn sync_now(h: &Arc<Harness>) -> Result<Report, String> {
     let _guard = h.sync_lock.lock().await;
     let result = sync_inner(h).await;
+    h.refresh_synced_catalogs().await;
     if let Some(mut st) = h.sync_state() {
         match &result {
             Ok(_) => {
