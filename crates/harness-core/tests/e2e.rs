@@ -34,10 +34,7 @@ async fn chat(State(m): State<Arc<Mock>>, Path(p): Path<String>, headers: Header
     // Key isolation: each provider only ever receives its own key.
     let expected = if p == "a" { "Bearer key-groq" } else { "Bearer key-cerebras" };
     assert_eq!(headers.get("authorization").unwrap().to_str().unwrap(), expected);
-    m.seen_headers
-        .lock()
-        .unwrap()
-        .extend(headers.iter().map(|(k, v)| format!("{k}: {}", v.to_str().unwrap_or(""))));
+    m.seen_headers.lock().unwrap().extend(headers.iter().map(|(k, v)| format!("{k}: {}", v.to_str().unwrap_or(""))));
     assert!(body.get("models").is_none(), "OpenRouter-only fields are stripped");
     let model = body["model"].as_str().unwrap().to_string();
     if p == "a" && model == "limited-70b" {

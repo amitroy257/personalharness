@@ -18,6 +18,8 @@ jobs:
     name: Build x64 installers
     runs-on: windows-latest
     timeout-minutes: 75
+    env:
+      PYTHONUTF8: "1"
     defaults:
       run:
         shell: pwsh
@@ -31,8 +33,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
 
-      - name: Core tests on Windows (includes DPAPI encryption)
-        run: cargo test -p harness-core --locked
+      - name: Rust tests on Windows (includes DPAPI encryption)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          cargo test -p harness-core --locked 2>&1 | Tee-Object -FilePath cargo-test.log
+          $code = $LASTEXITCODE
+          python scripts/ci_summary.py cargo cargo-test.log "Rust tests (Windows)"
+          if ($code -ne 0) { exit $code }
 
       - name: Build NSIS (.exe) and MSI installers
         run: npm run tauri build -- --bundles nsis,msi
@@ -74,6 +81,13 @@ jobs:
           $token = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, 'CurrentUser'))
           $models = Invoke-RestMethod http://127.0.0.1:4141/v1/models -Headers @{ Authorization = "Bearer $token" }
           Write-Host "authenticated /v1/models -> $($models.data.Count) entries: $(($models.data | Select-Object -First 4 -ExpandProperty id) -join ', ')"
+
+          # The running app checks its own privacy guarantees (DPAPI, data location, API exposure).
+          Invoke-RestMethod http://127.0.0.1:4141/v1/selfcheck -Headers @{ Authorization = "Bearer $token" } |
+            ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 selfcheck.json
+          python scripts/ci_summary.py selfcheck selfcheck.json "Privacy self-check — installed Windows app" `
+            --require data_location,secrets_encrypted,api_loopback_only,api_requires_token,api_host_check,api_no_cors
+          if ($LASTEXITCODE -ne 0) { throw "privacy self-check failed" }
 
           # Launching again (e.g. from the Start menu while hidden in the tray)
           # must focus the running instance, not start a second one.

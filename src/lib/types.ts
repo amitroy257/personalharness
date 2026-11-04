@@ -179,3 +179,11 @@ export interface PrivacyInfo {
   server: string;
   telemetry: string;
 }
+
+export interface SelfCheck {
+  platform: string;
+  desktop: boolean;
+  passed: number;
+  failed: number;
+  checks: { id: string; label: string; status: "pass" | "fail" | "info"; detail: string }[];
+}

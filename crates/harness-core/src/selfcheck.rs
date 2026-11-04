@@ -9,7 +9,7 @@
 //!   Host-header enforcement (probed over real HTTP against itself).
 
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -62,7 +62,7 @@ pub fn macos_sandbox_active() -> bool {
 }
 
 #[cfg(unix)]
-fn mode_of(p: &Path) -> Option<u32> {
+fn mode_of(p: &std::path::Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).ok().map(|m| m.permissions().mode() & 0o777)
 }
@@ -91,7 +91,12 @@ pub async fn run(h: &Harness) -> Vec<Check> {
                 if in_container { Status::Pass } else { Status::Fail },
                 format!("Data folder: {}", data_dir.display()),
             ),
-            (true, false) => check("os_sandbox", "macOS App Sandbox active", Status::Fail, "The desktop app is running without the App Sandbox"),
+            (true, false) => check(
+                "os_sandbox",
+                "macOS App Sandbox active",
+                Status::Fail,
+                "The desktop app is running without the App Sandbox",
+            ),
             (false, false) => check("os_sandbox", "macOS App Sandbox", Status::Info, "Headless server mode is not sandboxed"),
         });
         if active {
@@ -105,7 +110,13 @@ pub async fn run(h: &Harness) -> Vec<Check> {
         out.push(check(
             "data_location",
             "Data in local (non-roaming) profile",
-            if in_local && !in_roaming { Status::Pass } else if desktop { Status::Fail } else { Status::Info },
+            if in_local && !in_roaming {
+                Status::Pass
+            } else if desktop {
+                Status::Fail
+            } else {
+                Status::Info
+            },
             format!("{}", data_dir.display()),
         ));
         out.push(check(
@@ -195,7 +206,12 @@ pub async fn run(h: &Harness) -> Vec<Check> {
                     format!("connect to {ip}:{port} {}", if reachable { "SUCCEEDED" } else { "refused" }),
                 )
             }
-            None => check("api_loopback_only", "Local API unreachable from the network", Status::Pass, "bound to 127.0.0.1 (no LAN address)"),
+            None => check(
+                "api_loopback_only",
+                "Local API unreachable from the network",
+                Status::Pass,
+                "bound to 127.0.0.1 (no LAN address)",
+            ),
         });
         let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build();
         if let Ok(http) = http {
@@ -288,7 +304,9 @@ fn escape_probes() -> Vec<Check> {
             let _ = std::fs::remove_file(&probe);
             check("escape_write_home", "Cannot write outside its container", Status::Fail, format!("created {}", probe.display()))
         }
-        Err(e) => check("escape_write_home", "Cannot write outside its container", Status::Pass, format!("{}: {e}", probe.display())),
+        Err(e) => {
+            check("escape_write_home", "Cannot write outside its container", Status::Pass, format!("{}: {e}", probe.display()))
+        }
     });
     out
 }

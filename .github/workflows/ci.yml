@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: System libraries for the Tauri crate
         run: |
@@ -21,9 +23,52 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+
+      - name: UI security tests (sanitising untrusted model output)
+        run: |
+          npx vitest run --reporter=default --reporter=json --outputFile=vitest.json
+          python3 scripts/ci_summary.py vitest vitest.json "UI security tests (Linux)"
+
       - name: Type-check and build the UI
         run: npm run build
-      - name: Core + headless server tests
-        run: cargo test -p harness-core -p harness-cli --locked
+
+      - name: Rust tests — unit, end-to-end, privacy
+        run: |
+          set -o pipefail
+          cargo test -p harness-core -p harness-cli --locked 2>&1 | tee cargo-test.log
+          python3 scripts/ci_summary.py cargo cargo-test.log "Rust tests (Linux)"
+
+      - name: Lint (rustfmt + clippy, warnings are errors)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
       - name: Compile the desktop app crate
         run: cargo check -p personal-harness --locked
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm audit (everything shipped in the app)
+        run: npm audit --omit=dev --audit-level=low
+      - name: npm audit (build/test tooling)
+        run: npm audit --audit-level=high
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit (RustSec advisory database)
+        run: |
+          set -o pipefail
+          cargo audit 2>&1 | tee cargo-audit.log
+          {
+            echo "### Dependency audit"
+            echo ""
+            echo '```'
+            tail -n 25 cargo-audit.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

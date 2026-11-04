@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Nav } from "../App";
 import { call, copyText } from "../lib/api";
 import { DEVICE } from "../lib/format";
-import type { PrivacyInfo, SettingsView } from "../lib/types";
+import type { PrivacyInfo, SelfCheck, SettingsView } from "../lib/types";
 import { Switch, useToast } from "../components/ui";
 
 function SecretField({ label, set, hint, onSave }: { label: string; set: boolean; hint: string; onSave: (v: string) => void }) {
@@ -44,6 +44,19 @@ export default function SettingsPage({ nav }: { nav: Nav }) {
   const [s, setS] = useState<SettingsView | null>(null);
   const [p, setP] = useState<PrivacyInfo | null>(null);
   const [sys, setSys] = useState("");
+  const [check, setCheck] = useState<SelfCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const runCheck = async () => {
+    setChecking(true);
+    try {
+      setCheck(await call<SelfCheck>("privacy_selfcheck"));
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const [a, b] = await Promise.all([call<SettingsView>("get_settings"), call<PrivacyInfo>("privacy_info")]);
@@ -192,6 +205,45 @@ export default function SettingsPage({ nav }: { nav: Nav }) {
               onChange={(e) => update({ chat: { temperature: e.target.value === "" ? null : Number(e.target.value) } })}
             />
           </label>
+        </div>
+
+        <div className="card stack">
+          <div className="row">
+            <h3 className="grow">Privacy self-check</h3>
+            <button className="btn primary" onClick={runCheck} disabled={checking}>
+              {checking ? "Checking…" : "Run privacy check"}
+            </button>
+          </div>
+          <div className="small muted">
+            The app tries to break its own guarantees — read or write outside its private folder, reach the local API without a token or from the
+            network — and shows whether each attempt was blocked.
+          </div>
+          {check && (
+            <>
+              <div className={`banner small ${check.failed ? "bad" : ""}`}>
+                {check.failed ? `${check.failed} check(s) failed` : `All ${check.passed} checks passed`}
+              </div>
+              <table className="table small">
+                <tbody>
+                  {check.checks.map((c) => (
+                    <tr key={c.id}>
+                      <td style={{ width: 64 }}>
+                        <span className={`pill ${c.status === "pass" ? "good" : c.status === "fail" ? "bad" : ""}`}>
+                          {c.status === "pass" ? "✓ pass" : c.status === "fail" ? "✗ fail" : "info"}
+                        </span>
+                      </td>
+                      <td>
+                        <b>{c.label}</b>
+                        <div className="muted" style={{ wordBreak: "break-word" }}>
+                          {c.detail}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
 
         <div className="card stack">

@@ -32,8 +32,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
 
-      - name: Core tests on macOS
-        run: cargo test -p harness-core --locked
+      - name: Rust tests on macOS
+        run: |
+          set -o pipefail
+          cargo test -p harness-core --locked 2>&1 | tee cargo-test.log
+          python3 scripts/ci_summary.py cargo cargo-test.log "Rust tests (macOS)"
 
       - name: Build app + DMG (Apple Silicon + Intel)
         run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
@@ -42,11 +45,12 @@ jobs:
         run: |
           codesign -dv --verbose=2 "$APP" 2>&1 | head -20
           codesign -d --entitlements - "$APP"
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null | grep -q "com.apple.security.app-sandbox" || { echo "App Sandbox entitlement missing"; exit 1; }
           BIN="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS" | head -1)"
           lipo -archs "$BIN"
           ls -la target/universal-apple-darwin/release/bundle/dmg/
 
-      - name: Smoke test — launch the sandboxed app and call its local API
+      - name: Smoke + sandbox test — launch the app; it must not escape its sandbox
         run: |
           open "$APP"
           for i in $(seq 1 90); do
@@ -56,10 +60,15 @@ jobs:
           curl -sf http://127.0.0.1:4141/health
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4141/v1/models)
           echo "unauthenticated /v1/models -> $code"; test "$code" = "401"
-          CONTAINER="$HOME/Library/Containers/io.github.amitroy257.personalharness"
-          echo "Sandbox container contents:"; ls -la "$CONTAINER/Data/Library/Application Support/io.github.amitroy257.personalharness/"
-          TOKEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['server']['token'])" "$CONTAINER/Data/Library/Application Support/io.github.amitroy257.personalharness/settings.json")
-          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/models | head -c 400; echo
+          DATA="$HOME/Library/Containers/io.github.amitroy257.personalharness/Data/Library/Application Support/io.github.amitroy257.personalharness"
+          echo "Sandbox container contents:"; ls -la "$DATA/"
+          test ! -e "$HOME/Library/Application Support/io.github.amitroy257.personalharness" || { echo "data leaked outside the container"; exit 1; }
+          TOKEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['server']['token'])" "$DATA/settings.json")
+          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/models | head -c 300; echo
+          # The running app probes its own sandbox: reading/writing your home folder must be denied.
+          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/selfcheck > selfcheck.json
+          python3 scripts/ci_summary.py selfcheck selfcheck.json "Privacy self-check — installed macOS app" \
+            --require os_sandbox,escape_read_home,escape_read_documents,escape_read_desktop,escape_write_home,dir_permissions,file_permissions,api_loopback_only,api_requires_token,api_host_check,api_no_cors
           pkill -f "Personal Harness.app" || true
 
       - uses: actions/upload-artifact@v4

@@ -555,7 +555,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("harness.db")).unwrap();
-        s.record_usage(&UsageRecord { provider: "p".into(), model: "m".into(), family: "f".into(), ok: true, ..Default::default() });
+        s.record_usage(&UsageRecord {
+            provider: "p".into(),
+            model: "m".into(),
+            family: "f".into(),
+            ok: true,
+            ..Default::default()
+        });
         for f in std::fs::read_dir(dir.path()).unwrap() {
             let p = f.unwrap().path();
             let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
