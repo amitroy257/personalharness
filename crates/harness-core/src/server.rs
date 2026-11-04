@@ -30,6 +30,7 @@ pub fn api_router(h: Arc<Harness>) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/rankings", get(rankings))
+        .route("/v1/selfcheck", get(selfcheck))
         .with_state(h)
 }
 
@@ -133,6 +134,12 @@ async fn rankings(State(h): State<Arc<Harness>>, Query(q): Query<RankQuery>) -> 
     let mut items = h.rankings(view);
     items.truncate(q.limit.unwrap_or(50));
     Json(json!({"data": items}))
+}
+
+/// Privacy self-check (authenticated): the app probes its own sandbox,
+/// file permissions and API exposure. Used by CI on real macOS / Windows.
+async fn selfcheck(State(h): State<Arc<Harness>>) -> Json<Value> {
+    Json(crate::commands::selfcheck_json(&h).await)
 }
 
 fn harness_headers(resp: &mut Response, api_id: &str, provider: &str, attempts: usize) {

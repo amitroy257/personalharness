@@ -76,6 +76,8 @@ pub struct Message {
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
+-- overwrite deleted content with zeros instead of leaving it in free pages
+PRAGMA secure_delete = ON;
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS usage (
   id INTEGER PRIMARY KEY,
@@ -130,13 +132,21 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = Connection::open(path)?;
-        conn.execute_batch(SCHEMA)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            // Create the database owner-only *before* SQLite opens it: SQLite
+            // gives the -wal/-shm side files the same mode as the database file.
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let _ = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path);
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let p = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+                if p.exists() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+                }
+            }
         }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(SCHEMA)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -375,6 +385,8 @@ impl Store {
         let c = self.conn.lock();
         let _ = c.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id]);
         let _ = c.execute("DELETE FROM conversations WHERE id = ?1", params![id]);
+        // Deleted text must not survive in the write-ahead log either.
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -495,7 +507,9 @@ impl Store {
             "all" => c.execute_batch("DELETE FROM messages; DELETE FROM conversations; DELETE FROM usage; DELETE FROM kv;")?,
             other => anyhow::bail!("unknown wipe target: {other}"),
         }
-        c.execute_batch("VACUUM;")?;
+        // secure_delete zeroes freed pages; VACUUM rebuilds the file; the
+        // TRUNCATE checkpoint empties the WAL, which still holds old page images.
+        c.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
 }
@@ -503,6 +517,51 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn files_containing(dir: &Path, needle: &str) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|f| {
+                let p = f.ok()?.path();
+                let bytes = std::fs::read(&p).ok()?;
+                let name = p.file_name()?.to_string_lossy().to_string();
+                String::from_utf8_lossy(&bytes).contains(needle).then_some(name)
+            })
+            .collect()
+    }
+
+    /// Regression (SQA F1): deleted chat text was recoverable from harness.db-wal.
+    #[test]
+    fn deleted_chats_are_not_recoverable_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("harness.db")).unwrap();
+        let keep = s.create_conversation("keep", "auto", "");
+        s.add_message(&keep.id, "user", "KEEP-MARKER-1", "", "", "", (None, None), None, "");
+        let gone = s.create_conversation("gone", "auto", "");
+        for _ in 0..30 {
+            s.add_message(&gone.id, "user", "DELETE-MARKER-2 my password is hunter2", "", "", "", (None, None), None, "");
+        }
+        s.delete_conversation(&gone.id);
+        assert_eq!(files_containing(dir.path(), "DELETE-MARKER-2"), Vec::<String>::new(), "single chat delete");
+        assert!(!files_containing(dir.path(), "KEEP-MARKER-1").is_empty(), "kept chat still stored");
+        s.wipe("chats").unwrap();
+        assert_eq!(files_containing(dir.path(), "KEEP-MARKER-1"), Vec::<String>::new(), "wipe all chats");
+    }
+
+    /// Regression (SQA F2): -wal/-shm side files were created world-readable (0644).
+    #[cfg(unix)]
+    #[test]
+    fn database_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("harness.db")).unwrap();
+        s.record_usage(&UsageRecord { provider: "p".into(), model: "m".into(), family: "f".into(), ok: true, ..Default::default() });
+        for f in std::fs::read_dir(dir.path()).unwrap() {
+            let p = f.unwrap().path();
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{} is {mode:o}", p.display());
+        }
+    }
 
     #[test]
     fn usage_and_ratings_aggregate() {

@@ -52,7 +52,15 @@ pub struct Harness {
     signals_refresh: tokio::sync::Mutex<()>,
     /// conversation id -> stop flag for in-flight generations
     pub(crate) stops: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    /// Usage aggregates for rankings, cached briefly (SQA F3: recomputing them
+    /// on every `auto` request cost ~170 ms with 100k usage rows).
+    stats_cache: Mutex<Option<(std::time::Instant, UsageStats)>>,
+    /// True when running inside the desktop app (vs. the headless server).
+    desktop: std::sync::atomic::AtomicBool,
 }
+
+type UsageStats = Arc<(HashMap<String, crate::store::FamilyStats>, HashMap<String, (i64, i64, Option<f64>)>)>;
+const STATS_TTL: Duration = Duration::from_secs(15);
 
 impl Harness {
     pub fn open(data_dir: &Path) -> anyhow::Result<Arc<Self>> {
@@ -101,7 +109,19 @@ impl Harness {
             extra_routes: Mutex::new(None),
             signals_refresh: tokio::sync::Mutex::new(()),
             stops: Mutex::new(HashMap::new()),
+            stats_cache: Mutex::new(None),
+            desktop: std::sync::atomic::AtomicBool::new(false),
         }))
+    }
+
+    /// Called by the desktop app so the privacy self-check knows the OS
+    /// sandbox is expected (headless mode is not sandboxed).
+    pub fn set_desktop(&self, v: bool) {
+        self.desktop.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_desktop(&self) -> bool {
+        self.desktop.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     // ---- settings ------------------------------------------------------------
@@ -200,11 +220,29 @@ impl Harness {
         fresh
     }
 
+    fn usage_stats(&self) -> UsageStats {
+        let mut cache = self.stats_cache.lock();
+        if let Some((at, stats)) = cache.as_ref() {
+            if at.elapsed() < STATS_TTL {
+                return stats.clone();
+            }
+        }
+        let stats: UsageStats = Arc::new((self.store.family_stats(30), self.store.route_stats(30)));
+        *cache = Some((std::time::Instant::now(), stats.clone()));
+        stats
+    }
+
+    /// Drop cached usage aggregates (after ratings or deletions, so the UI
+    /// reflects them immediately).
+    pub fn invalidate_stats(&self) {
+        *self.stats_cache.lock() = None;
+    }
+
     pub fn rankings(&self, view: View) -> Vec<RankedModel> {
         let entries = self.entries(false);
         let signals = self.signals.read();
-        let fam = self.store.family_stats(30);
-        let routes = self.store.route_stats(30);
+        let stats = self.usage_stats();
+        let (fam, routes) = (&stats.0, &stats.1);
         let cds = self.cooldown_map();
         let s = self.settings.read();
         let providers: HashMap<String, (String, f64)> =
@@ -212,8 +250,8 @@ impl Harness {
         let input = RankInput {
             entries: &entries,
             signals: &signals,
-            family_stats: &fam,
-            route_stats: &routes,
+            family_stats: fam,
+            route_stats: routes,
             cooldowns: &cds,
             providers: &providers,
             personal_weight: s.ranking.personal_weight,

@@ -108,7 +108,9 @@ pub async fn call(h: &Arc<Harness>, name: &str, args: Value) -> R {
         "rate_message" => {
             let id = req_str(&args, "id")?;
             let rating = args.get("rating").and_then(|v| v.as_i64()).unwrap_or(0);
-            Ok(json!({"ok": h.store.rate_message(&id, rating)}))
+            let ok = h.store.rate_message(&id, rating);
+            h.invalidate_stats();
+            Ok(json!({"ok": ok}))
         }
         "stop_generation" => {
             let id = req_str(&args, "conversation_id")?;
@@ -132,6 +134,7 @@ pub async fn call(h: &Arc<Harness>, name: &str, args: Value) -> R {
         "wipe_data" => {
             let what = arg_str(&args, "what").unwrap_or_else(|| "all".into());
             h.store.wipe(&what).map_err(e2s)?;
+            h.invalidate_stats();
             if what == "all" {
                 h.update_settings(|s| {
                     let token = crate::util::new_token();
@@ -144,8 +147,21 @@ pub async fn call(h: &Arc<Harness>, name: &str, args: Value) -> R {
             Ok(json!({"ok": true}))
         }
         "privacy_info" => Ok(h.privacy_info()),
+        "privacy_selfcheck" => Ok(selfcheck_json(h).await),
         other => Err(format!("unknown command '{other}'")),
     }
+}
+
+pub async fn selfcheck_json(h: &Arc<Harness>) -> Value {
+    let checks = crate::selfcheck::run(h).await;
+    let count = |st: crate::selfcheck::Status| checks.iter().filter(|c| c.status == st).count();
+    json!({
+        "platform": std::env::consts::OS,
+        "desktop": h.is_desktop(),
+        "passed": count(crate::selfcheck::Status::Pass),
+        "failed": count(crate::selfcheck::Status::Fail),
+        "checks": checks,
+    })
 }
 
 async fn overview(h: &Arc<Harness>) -> R {

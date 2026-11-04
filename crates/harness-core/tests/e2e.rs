@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 #[derive(Default)]
 struct Mock {
     calls: AtomicUsize,
+    /// Every header value any provider received, for leak checks.
+    seen_headers: std::sync::Mutex<Vec<String>>,
 }
 
 async fn models(Path(p): Path<String>) -> Json<Value> {
@@ -29,7 +31,13 @@ async fn models(Path(p): Path<String>) -> Json<Value> {
 
 async fn chat(State(m): State<Arc<Mock>>, Path(p): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     m.calls.fetch_add(1, Ordering::SeqCst);
-    assert!(headers.get("authorization").unwrap().to_str().unwrap().starts_with("Bearer key-"));
+    // Key isolation: each provider only ever receives its own key.
+    let expected = if p == "a" { "Bearer key-groq" } else { "Bearer key-cerebras" };
+    assert_eq!(headers.get("authorization").unwrap().to_str().unwrap(), expected);
+    m.seen_headers
+        .lock()
+        .unwrap()
+        .extend(headers.iter().map(|(k, v)| format!("{k}: {}", v.to_str().unwrap_or(""))));
     assert!(body.get("models").is_none(), "OpenRouter-only fields are stripped");
     let model = body["model"].as_str().unwrap().to_string();
     if p == "a" && model == "limited-70b" {
@@ -121,6 +129,8 @@ async fn routes_falls_back_streams_and_records() {
     let r = c
         .post(format!("{base}/v1/chat/completions"))
         .bearer_auth(&token)
+        .header("x-client-secret", "client-only-s3cr3t")
+        .header("cookie", "session=client-cookie")
         .json(&json!({"model": "groq/limited-70b", "messages": [{"role": "user", "content": "hi"}], "models": ["groq/solo-8b"]}))
         .send()
         .await
@@ -200,6 +210,22 @@ async fn routes_falls_back_streams_and_records() {
     assert_eq!(v["ok"], true);
     let mine = commands::call(&h, "rankings", json!({"view": "mine"})).await.unwrap();
     assert!(!mine["items"].as_array().unwrap().is_empty());
+
+    // Nothing from the client side leaks upstream: not the local token, not
+    // the client's own headers or cookies.
+    let seen = calls.seen_headers.lock().unwrap().join("\n");
+    assert!(!seen.contains(&token), "local API token was forwarded to a provider");
+    assert!(!seen.contains("client-only-s3cr3t") && !seen.contains("client-cookie"), "client headers forwarded:\n{seen}");
+
+    // privacy self-check (headless on Linux/macOS/Windows CI): nothing may fail
+    let sc = commands::call(&h, "privacy_selfcheck", Value::Null).await.unwrap();
+    assert_eq!(sc["failed"], 0, "{sc:#}");
+    let ids: Vec<&str> = sc["checks"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    for want in ["api_requires_token", "api_host_check", "api_no_cors", "api_loopback_only"] {
+        assert!(ids.contains(&want), "{want} missing: {ids:?}");
+    }
+    let v: Value = c.get(format!("{base}/v1/selfcheck")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    assert_eq!(v["failed"], 0);
 
     // providers view never exposes full keys
     let p = commands::call(&h, "list_providers", Value::Null).await.unwrap();

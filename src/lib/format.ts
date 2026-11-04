@@ -8,7 +8,7 @@ marked.setOptions({ gfm: true, breaks: false });
 export function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false }) as string;
   return DOMPurify.sanitize(html, {
-    FORBID_TAGS: ["img", "style", "iframe", "form", "input", "video", "audio", "source", "object", "embed"],
+    FORBID_TAGS: ["img", "style", "iframe", "form", "input", "video", "audio", "source", "object", "embed", "svg", "math"],
     FORBID_ATTR: ["style", "srcset"],
   });
 }

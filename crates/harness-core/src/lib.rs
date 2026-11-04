@@ -11,6 +11,7 @@ pub mod ranking;
 pub mod relay;
 pub mod router;
 pub mod secret;
+pub mod selfcheck;
 pub mod server;
 pub mod settings;
 pub mod signals;

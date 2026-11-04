@@ -86,6 +86,7 @@ pub fn run() {
             // Windows: %LOCALAPPDATA%\<id> (local, never roamed to other machines)
             let dir = app.path().app_local_data_dir()?;
             let h = Harness::open(&dir)?;
+            h.set_desktop(true);
             app.manage(h.clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = h.start_server().await {
