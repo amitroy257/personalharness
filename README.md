@@ -1,5 +1,7 @@
 # Personal Harness
 
+[![CI](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml) [![macOS app](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml) [![Windows app](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml)
+
 A personal, **OpenRouter-style** app for **macOS and Windows**. It brings together the **free tiers** of many LLM providers behind:
 
 - **a chat app**, and
@@ -8,6 +10,29 @@ A personal, **OpenRouter-style** app for **macOS and Windows**. It brings togeth
 It also **ranks the models you can actually use** (strongest, most used, hot and personally best) and recommends which one to use. Everything is stored **only on your computer**: inside the App Sandbox on macOS, and in your local Windows profile with API keys encrypted by DPAPI on Windows.
 
 <p align="center"><img src="src-tauri/app-icon.png" width="96" alt="app icon"></p>
+
+## Quality & testing
+
+Every push is tested on **Linux, macOS and Windows**. The macOS and Windows jobs install the real app, launch it, and make it attack its own privacy guarantees. Each run's **Summary** tab on GitHub shows a pass/fail table with evidence. Full SQA report: **[docs/TEST_REPORT.md](docs/TEST_REPORT.md)**.
+
+| Area | What is proven | Status |
+|---|---|:-:|
+| **Data sandboxing (macOS)** | The installed app tries to list your home folder, read `~/Documents` and `~/Desktop`, and write into your home folder. The App Sandbox must deny every attempt, or the build fails. All data stays in its container. | ✅ |
+| **Data protection (Windows)** | Keys and token are DPAPI-encrypted on disk (CI decrypts them with Windows' own API to prove it); data stays in the local, non-roaming profile | ✅ |
+| **Deleted data is really gone** | After deleting a chat, its text is not recoverable from the raw database, WAL or SHM files | ✅ |
+| **Owner-only files** | Data folder `0700`, settings and database files `0600` | ✅ |
+| **Keys never leak** | Each provider receives only its own key; your local token and your client's headers are never forwarded; the UI never sees full keys | ✅ |
+| **Local API is local** | Unreachable from the network, token required (401), foreign Host rejected (403, anti DNS-rebinding), no CORS | ✅ |
+| **No unexpected traffic** | With public data off, the ranking client makes zero requests; optional keys go only to their own service | ✅ |
+| **Malicious model output** | Scripts, event handlers, `javascript:` links, tracking pixels and iframes are neutralised (unit tests plus a live browser attack) | ✅ |
+| **Routing** | Rate-limit fallback to the same model on another provider, cooldowns, streaming, `auto` presets | ✅ |
+| **Installers** | Universal DMG (arm64 + x86_64), NSIS per-user setup + MSI; launch in about 2 s; single instance | ✅ |
+| **Dependencies** | `npm audit` 0 vulnerabilities; `cargo audit` 0 vulnerabilities across 540 crates | ✅ |
+| **Code quality** | rustfmt, clippy with warnings as errors, TypeScript strict; 42 Rust + 10 UI tests | ✅ |
+
+The review found 5 defects in the shipped code, including one **High**: deleted chats were recoverable from SQLite's write-ahead log. All are fixed with regression tests; see §5 of the report. Known residual risks, the main one being that real-provider behaviour is tested with mocks in CI, are listed in §7.
+
+Run the same privacy checks on your own machine: **Privacy & Settings → Run privacy check**.
 
 ## What it does
 
