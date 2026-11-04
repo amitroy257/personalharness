@@ -26,20 +26,53 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
     "copyright": "",
     "shortDescription": "Local OpenRouter-style router for free LLM APIs",
-    "longDescription": "Chat with and route between free LLM API tiers (Groq, Gemini, Mistral, Cerebras, GitHub Models, NVIDIA and more) through one local OpenAI-compatible endpoint, with rankings that recommend which model to use. All data stays on your Mac.",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "longDescription": "Chat with and route between free LLM API tiers (Groq, Gemini, Mistral, Cerebras, GitHub Models, NVIDIA and more) through one local OpenAI-compatible endpoint, with rankings that recommend which model to use. All data stays on your computer.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "./Entitlements.plist",
       "signingIdentity": "-",
       "dmg": {
-        "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 180, "y": 170 },
-        "applicationFolderPosition": { "x": 480, "y": 170 }
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    },
+    "publisher": "Personal Harness",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": "en-US"
       }
     }
   }

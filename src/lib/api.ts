@@ -1,4 +1,4 @@
-// Transport: Tauri IPC inside the Mac app, HTTP when the UI is served by the
+// Transport: Tauri IPC inside the desktop app, HTTP when the UI is served by the
 // headless `harness-server` (or the Vite dev server) in a browser.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { ChatEvent } from "./types";

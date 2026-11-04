@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Nav } from "../App";
 import { call, chat, openExternal } from "../lib/api";
-import { renderMarkdown, timeAgo } from "../lib/format";
+import { DEVICE, renderMarkdown, timeAgo } from "../lib/format";
 import type { Conversation, Message, Overview, Preset, RankedModel, RankingsResponse } from "../lib/types";
 import { CopyButton, useToast } from "../components/ui";
 
@@ -270,7 +270,7 @@ export default function ChatPage({
         <button className="btn primary" onClick={newChat} style={{ marginBottom: 8 }}>
           + New chat
         </button>
-        {convs.length === 0 && <div className="muted small" style={{ padding: 10 }}>Your chats are stored only on this Mac.</div>}
+        {convs.length === 0 && <div className="muted small" style={{ padding: 10 }}>Your chats are stored only on {DEVICE}.</div>}
         {convs.map((c) => (
           <div key={c.id} className={`conv ${c.id === activeId ? "active" : ""}`} onClick={() => openConv(c)}>
             <div style={{ minWidth: 0 }}>
@@ -303,8 +303,7 @@ export default function ChatPage({
             {noProviders && (
               <div className="banner">
                 <div className="grow">
-                  <b>Add a free API key to start.</b> Groq, Google Gemini, Cerebras, Mistral, GitHub Models and others give free access — keys stay on this
-                  Mac.
+                  <b>Add a free API key to start.</b> Groq, Google Gemini, Cerebras, Mistral, GitHub Models and others give free access — keys stay on {DEVICE}.
                 </div>
                 <button className="btn primary" onClick={() => nav.go("providers")}>
                   Set up providers

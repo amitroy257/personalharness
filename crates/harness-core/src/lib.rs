@@ -10,6 +10,7 @@ pub mod providers;
 pub mod ranking;
 pub mod relay;
 pub mod router;
+pub mod secret;
 pub mod server;
 pub mod settings;
 pub mod signals;

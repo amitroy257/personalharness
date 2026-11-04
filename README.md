@@ -1,11 +1,11 @@
 # Personal Harness
 
-A personal, **OpenRouter-style** app for macOS. It brings together the **free tiers** of many LLM providers behind:
+A personal, **OpenRouter-style** app for **macOS and Windows**. It brings together the **free tiers** of many LLM providers behind:
 
 - **a chat app**, and
 - **one local OpenAI-compatible API** (`http://127.0.0.1:4141/v1`) that Cursor, VS Code extensions, scripts and other tools can use.
 
-It also **ranks the models you can actually use** (strongest, most used, hot and personally best) and recommends which one to use. Everything is stored **only on your Mac**, inside the app's macOS sandbox.
+It also **ranks the models you can actually use** (strongest, most used, hot and personally best) and recommends which one to use. Everything is stored **only on your computer**: inside the App Sandbox on macOS, and in your local Windows profile with API keys encrypted by DPAPI on Windows.
 
 <p align="center"><img src="src-tauri/app-icon.png" width="96" alt="app icon"></p>
 
@@ -16,9 +16,9 @@ It also **ranks the models you can actually use** (strongest, most used, hot and
 | **Free-tier aggregation** | Built in: Groq, Google Gemini, Mistral, Cerebras, GitHub Models, NVIDIA NIM, Cloudflare Workers AI, SambaNova, Hugging Face, Zhipu GLM Flash. You can add any OpenAI-compatible endpoint, such as a local Ollama or LM Studio. |
 | **OpenRouter-like routing** | Ask for `auto`, `auto:coding`, `auto:reasoning` or `auto:fast`, an exact `provider/model`, or a bare model name like `llama-3.3-70b`. If a route is rate-limited or down, the request moves to the **same model on another provider**, then to the **next-best model**. Rate-limited routes cool down (it honours `Retry-After`). OpenRouter's `models: [...]` fallback list also works. |
 | **Rankings & recommendations** | Views: **Recommended** (General / Coding / Reasoning / Fast), **Strongest**, **Most used**, **Hot**, **My usage**. Each score explains *why*. |
-| **Private by design** | Uses the macOS App Sandbox. Keys and chats stay in the app's container. There is no account, no sync and no telemetry. The local API listens on loopback only and needs a token. |
+| **Private by design** | macOS: App Sandbox. Windows: local (non-roaming) profile folder, secrets encrypted with DPAPI. Keys and chats never leave the machine; no account, no sync, no telemetry. The local API listens on loopback only and needs a token. |
 
-## Install (DMG)
+## Install on macOS (DMG)
 
 Every push builds a universal DMG (Apple Silicon and Intel) on GitHub Actions:
 
@@ -30,6 +30,16 @@ Every push builds a universal DMG (Apple Silicon and Intel) on GitHub Actions:
    - in Terminal, run: `xattr -dr com.apple.quarantine "/Applications/Personal Harness.app"`
 
 Closing the window leaves the app running in the **menu bar**, so the local API stays available. Quit it from the menu-bar icon or with ⌘Q.
+
+## Install on Windows
+
+Every push also builds Windows x64 installers (Windows 10 and 11; also runs on Windows on ARM through emulation):
+
+1. Open **Actions → "Windows app (installer)"**, pick the latest green run, and download **PersonalHarness-Windows-x64**. Tagged versions attach the installers to the **GitHub Release**.
+2. Run **`Personal Harness_0.1.0_x64-setup.exe`**. It installs for your user only, with no administrator prompt. An `.msi` is also provided if you prefer it, for example for managed installs.
+3. The installer is not code-signed (that needs a paid certificate), so **SmartScreen** may say "Windows protected your PC". Click **More info → Run anyway**.
+
+Closing the window keeps the app running in the **system tray** (near the clock), so the local API stays available. Left-click the tray icon to reopen the window; right-click it for **Quit**. Opening the app again from the Start menu brings back the running instance rather than starting a second copy. The installer adds the Microsoft Edge WebView2 runtime if it is missing (it is preinstalled on Windows 10/11).
 
 ## Get free keys
 
@@ -95,22 +105,27 @@ Then **your own results** are blended in: success rate, speed and 👍/👎 in c
 
 ## Privacy & data
 
-- **Where data lives:** `~/Library/Containers/io.github.amitroy257.personalharness/Data/Library/Application Support/io.github.amitroy257.personalharness/`
-  - `settings.json`: keys, preferences, local API token (mode `0600`)
-  - `harness.db` (SQLite): chats, per-request metadata (model, status, timing, token counts) and ratings. Local API requests are logged as **metadata only, never prompt text**.
-- **Sandbox:** the app has only the `app-sandbox`, `network.client` and `network.server` entitlements. It cannot read your files.
+- **Where data lives:**
+  - macOS: `~/Library/Containers/io.github.amitroy257.personalharness/Data/Library/Application Support/io.github.amitroy257.personalharness/`
+  - Windows: `%LOCALAPPDATA%\io.github.amitroy257.personalharness\` (the local, non-roaming profile, so it is never synced to other machines)
+  - In both: `settings.json` holds keys, preferences and the local API token; `harness.db` (SQLite) holds chats, per-request metadata (model, status, timing, token counts) and ratings. Local API requests are logged as **metadata only, never prompt text**.
+- **macOS sandbox:** the app has only the `app-sandbox`, `network.client` and `network.server` entitlements. It cannot read your files. `settings.json` is mode `0600`.
+- **Windows protection:** Windows has no App Sandbox for ordinary desktop apps. Instead, provider keys, ranking keys and the local API token are **encrypted with DPAPI** (current-user scope), so only your Windows account on this PC can decrypt them. Copying `settings.json` to another account or machine yields nothing usable.
 - **Network:** traffic goes only to the providers you connect, plus anonymous GETs for ranking data (`raw.githubusercontent.com`, `huggingface.co`, `openrouter.ai`). **Privacy & Settings** lists every host, and you can turn public data off to rank from the bundled snapshot plus your own usage.
 - **Local API:** binds `127.0.0.1` only, requires the token, rejects non-loopback `Host` headers (which blocks DNS-rebinding), and never sends CORS headers, so web pages can't use it.
 - **Delete:** **Privacy & Settings** can delete chats, usage history or everything.
 
 ## Build from source
 
-Requirements: macOS 11+, Xcode Command Line Tools, [Rust](https://rustup.rs), Node 20+.
+Requirements: [Rust](https://rustup.rs), Node 20+, plus:
+- macOS 11+: Xcode Command Line Tools
+- Windows 10/11: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
 
 ```bash
 npm ci
-npm run tauri dev                      # run the app in development
-npm run tauri build -- --bundles dmg   # build the .app and .dmg for your Mac
+npm run tauri dev                              # run the app in development
+npm run tauri build -- --bundles dmg           # macOS: .app + .dmg
+npm run tauri build -- --bundles nsis,msi      # Windows: setup .exe + .msi
 ```
 
 Without the desktop app (any OS), the same router and UI also run headless:
@@ -121,7 +136,7 @@ cargo run -p harness-cli --release -- --port 4141 --ui dist
 # prints the API base URL, token, and a web UI link
 ```
 
-Tests: `cargo test -p harness-core` runs unit tests plus an end-to-end test against mock providers: fallback, cooldowns, streaming, auth and chat persistence.
+Tests: `cargo test -p harness-core` runs unit tests plus an end-to-end test against mock providers: fallback, cooldowns, streaming, auth and chat persistence. CI runs them on Linux, macOS and Windows, then installs and launches the built apps as a smoke test.
 
 Refresh the bundled leaderboard snapshot with `python3 scripts/build_baseline.py`.
 
@@ -130,7 +145,7 @@ Refresh the bundled leaderboard snapshot with `python3 scripts/build_baseline.py
 ```
 crates/harness-core   Router, providers, ranking, local API, SQLite store (all logic, tested)
 crates/harness-cli    `harness-server`: headless API + web UI
-src-tauri             macOS app shell: window, menu bar, sandbox entitlements, DMG config
+src-tauri             Desktop shell (macOS + Windows): window, menu bar / tray, sandbox entitlements, DMG / NSIS / MSI config
 src                   React UI (Chat, Rankings, Models, Providers, Local API, Privacy & Settings)
 scripts               Baseline leaderboard generator, icon generator
 ```

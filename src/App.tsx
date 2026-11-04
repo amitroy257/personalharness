@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { call } from "./lib/api";
+import { DEVICE } from "./lib/format";
 import type { Overview } from "./lib/types";
 import { Icon } from "./components/ui";
 import ChatPage from "./pages/Chat";
@@ -84,7 +85,7 @@ export default function App() {
           <div>
             {overview?.models_available ?? 0} models · {overview?.providers_configured ?? 0} providers
           </div>
-          <div>🔒 Data stays on this Mac</div>
+          <div>🔒 Data stays on {DEVICE}</div>
         </div>
       </aside>
       <main className="main">

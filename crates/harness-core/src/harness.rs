@@ -353,16 +353,39 @@ impl Harness {
                 dest.push(serde_json::json!({"host": host_of(&u.aa_models), "why": "Benchmark indexes with your key (GET)"}));
             }
         }
+        let keys_note = if cfg!(windows) {
+            "Provider keys and local API token (encrypted with Windows DPAPI for your user account), preferences"
+        } else {
+            "Provider keys, preferences, local API token (owner-only permissions)"
+        };
         serde_json::json!({
             "data_dir": self.data_dir.display().to_string(),
+            "platform": std::env::consts::OS,
+            "protection": protection_note(),
             "files": [
-                {"name": "settings.json", "what": "Provider keys, preferences, local API token (owner-only permissions)"},
+                {"name": "settings.json", "what": keys_note},
                 {"name": "harness.db", "what": "Chats, per-request metadata (model, status, timing, token counts), ratings, caches"},
             ],
             "network": dest,
             "server": format!("Local API listens on 127.0.0.1:{} only, requires your token, rejects foreign Host headers", s.server.port),
             "telemetry": "None. No analytics, crash reporting or update pings.",
         })
+    }
+}
+
+/// How this platform keeps the data private, in one sentence for the UI.
+pub fn protection_note() -> &'static str {
+    if cfg!(target_os = "macos") {
+        // macOS sets this variable for processes running inside the App Sandbox.
+        if std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some() {
+            "macOS App Sandbox: the app can only read and write its own private container, not your files."
+        } else {
+            "Stored in your user Library with owner-only permissions (headless mode is not sandboxed)."
+        }
+    } else if cfg!(windows) {
+        "Stored in your Windows profile (%LOCALAPPDATA%, never roamed to other machines); API keys are encrypted with Windows DPAPI so only your Windows account can read them."
+    } else {
+        "Stored in your home directory with owner-only permissions."
     }
 }
 

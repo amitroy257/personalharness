@@ -1,0 +1,4 @@
+[env]
+# aws-lc-sys (TLS) needs NASM on Windows x86_64; use its prebuilt objects instead
+# so a plain Rust + Visual Studio Build Tools setup is enough to build.
+AWS_LC_SYS_PREBUILT_NASM = "1"

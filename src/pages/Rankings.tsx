@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Nav } from "../App";
 import { call } from "../lib/api";
-import { ctxLabel, releasedLabel, timeAgo } from "../lib/format";
+import { ctxLabel, DEVICE, releasedLabel, timeAgo } from "../lib/format";
 import type { Preset, RankedModel, RankingsResponse, ViewName } from "../lib/types";
 import { Badges, Bar, CopyButton, useToast } from "../components/ui";
 
@@ -10,7 +10,7 @@ const VIEWS: { id: ViewName; label: string; blurb: string }[] = [
   { id: "strongest", label: "Strongest", blurb: "Quality from public leaderboards (LMArena; Artificial Analysis if you add a key)." },
   { id: "popular", label: "Most used", blurb: "Global usage: OpenRouter token volume (optional key), Hugging Face downloads, LMArena votes." },
   { id: "hot", label: "Hot 🔥", blurb: "Momentum: Hugging Face trending, how recently it was released, OpenRouter growth." },
-  { id: "mine", label: "My usage", blurb: "Your own history on this Mac: calls, success rate, speed and 👍/👎." },
+  { id: "mine", label: "My usage", blurb: `Your own history on ${DEVICE}: calls, success rate, speed and 👍/👎.` },
 ];
 
 const PRESETS: { id: Preset; label: string }[] = [
@@ -144,7 +144,7 @@ export default function RankingsPage({ nav }: { nav: Nav }) {
       {data && items.length === 0 && (
         <div className="card empty">
           {view === "mine" ? (
-            <p>No personal history yet. Chat or call the local API — your stats are recorded only on this Mac.</p>
+            <p>No personal history yet. Chat or call the local API — your stats are recorded only on {DEVICE}.</p>
           ) : (
             <>
               <p>No models available yet. Connect at least one free provider to see rankings for models you can actually use.</p>

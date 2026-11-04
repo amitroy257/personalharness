@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::util;
+use crate::{secret, util};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -130,15 +130,32 @@ impl Settings {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
             Err(e) => return Err(e.into()),
         };
+        s.map_secrets(secret::unprotect);
         if s.server.token.is_empty() {
             s.server.token = util::new_token();
         }
         Ok(s)
     }
 
+    /// Writes with owner-only permissions; on Windows secrets are DPAPI-encrypted.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let bytes = serde_json::to_vec_pretty(self)?;
+        let mut on_disk = self.clone();
+        on_disk.map_secrets(secret::protect);
+        let bytes = serde_json::to_vec_pretty(&on_disk)?;
         util::write_private(path, &bytes)
+    }
+
+    /// Apply `f` to every secret: provider keys, ranking keys, local API token.
+    fn map_secrets(&mut self, f: impl Fn(&str) -> String) {
+        for p in self.providers.values_mut() {
+            p.api_key = f(&p.api_key);
+        }
+        for c in self.custom_providers.iter_mut() {
+            c.api_key = f(&c.api_key);
+        }
+        self.ranking.openrouter_key = f(&self.ranking.openrouter_key);
+        self.ranking.artificial_analysis_key = f(&self.ranking.artificial_analysis_key);
+        self.server.token = f(&self.server.token);
     }
 
     pub fn provider(&self, id: &str) -> ProviderSettings {
@@ -161,6 +178,13 @@ mod tests {
         s.save(&p).unwrap();
         let t = Settings::load(&p).unwrap();
         assert_eq!(t.provider("groq").api_key, "k");
+        let raw = std::fs::read_to_string(&p).unwrap();
+        if cfg!(windows) {
+            assert!(!raw.contains(&s.server.token), "token must be DPAPI-encrypted on disk");
+            assert!(raw.contains("dpapi:"));
+        } else {
+            assert!(raw.contains(&s.server.token));
+        }
         assert_eq!(t.server.token, s.server.token);
         #[cfg(unix)]
         {

@@ -1,6 +1,6 @@
-//! Personal Harness desktop app (Tauri). The window is the UI; the router and
-//! local API live in `harness-core` and keep running in the menu bar when the
-//! window is closed.
+//! Personal Harness desktop app (Tauri, macOS + Windows). The window is the UI;
+//! the router and local API live in `harness-core` and keep running in the
+//! menu bar (macOS) / system tray (Windows) when the window is closed.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use harness_core::{commands, Harness};
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime, State, WindowEvent};
 
 #[tauri::command]
@@ -42,14 +42,25 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Personal Harness", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &info, &sep, &quit])?;
-    let mut tray =
-        TrayIconBuilder::with_id("main").menu(&menu).tooltip("Personal Harness").show_menu_on_left_click(true).on_menu_event(
-            |app, event| match event.id().as_ref() {
-                "show" => show_main(app),
-                "quit" => app.exit(0),
-                _ => {}
-            },
-        );
+    // macOS convention: any click opens the menu. Windows convention: left
+    // click opens the app, right click opens the menu.
+    let mut tray = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .tooltip("Personal Harness")
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if cfg!(target_os = "macos") {
+                return;
+            }
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main(tray.app_handle());
+            }
+        });
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
@@ -59,13 +70,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
-        .menu(Menu::default)
+    let builder = tauri::Builder::default();
+    // A second launch (e.g. Start menu while hidden in the tray) focuses the
+    // running instance instead of fighting it for the API port.
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)));
+    // The standard app menu (Edit → Copy/Paste shortcuts etc.) belongs to macOS;
+    // on Windows it would add a menu bar to the window.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(Menu::default);
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // Inside the macOS App Sandbox this resolves to
-            // ~/Library/Containers/<bundle id>/Data/Library/Application Support/<bundle id>
-            let dir = app.path().app_data_dir()?;
+            // macOS (sandboxed): ~/Library/Containers/<id>/Data/Library/Application Support/<id>
+            // Windows: %LOCALAPPDATA%\<id> (local, never roamed to other machines)
+            let dir = app.path().app_local_data_dir()?;
             let h = Harness::open(&dir)?;
             app.manage(h.clone());
             tauri::async_runtime::spawn(async move {
@@ -80,7 +99,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Keep running in the menu bar so the local API stays available.
+            // Keep running in the menu bar / tray so the local API stays available.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Nav } from "../App";
 import { call, copyText } from "../lib/api";
+import { DEVICE } from "../lib/format";
 import type { PrivacyInfo, SettingsView } from "../lib/types";
 import { Switch, useToast } from "../components/ui";
 
@@ -79,13 +80,14 @@ export default function SettingsPage({ nav }: { nav: Nav }) {
       <div className="page-header">
         <div>
           <h1>Privacy & Settings</h1>
-          <p>Everything is stored locally inside the app's sandboxed container. There is no account, no cloud sync and no telemetry.</p>
+          <p>Everything is stored locally on {DEVICE}. There is no account, no cloud sync and no telemetry.</p>
         </div>
       </div>
 
       <div className="grid-2">
         <div className="card stack">
           <h3>Where your data lives</h3>
+          <div className="banner small">🔒 {p.protection}</div>
           <div className="row">
             <span className="mono small grow" style={{ wordBreak: "break-all" }}>
               {p.data_dir}

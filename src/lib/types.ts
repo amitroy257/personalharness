@@ -172,6 +172,8 @@ export interface SettingsView {
 
 export interface PrivacyInfo {
   data_dir: string;
+  platform: string;
+  protection: string;
   files: { name: string; what: string }[];
   network: { host: string; why: string }[];
   server: string;

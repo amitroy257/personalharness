@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Nav } from "../App";
 import { call } from "../lib/api";
+import { DEVICE } from "../lib/format";
 import type { ServerStatus, SettingsView } from "../lib/types";
 import { CopyButton, Switch, useToast } from "../components/ui";
 
@@ -61,7 +62,7 @@ console.log(r.model, r.choices[0].message.content);`;
       <div className="page-header">
         <div>
           <h1>Local API</h1>
-          <p>An OpenAI-compatible endpoint on this Mac, so Cursor, VS Code extensions, scripts and other apps can use your free models like OpenRouter.</p>
+          <p>An OpenAI-compatible endpoint on {DEVICE}, so Cursor, VS Code extensions, scripts and other apps can use your free models like OpenRouter.</p>
         </div>
       </div>
 

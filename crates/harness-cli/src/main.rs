@@ -17,13 +17,16 @@ struct Args {
 fn usage() -> ! {
     eprintln!(
         "Usage: harness-server [--data-dir DIR] [--port PORT] [--ui DIST_DIR | --no-ui]\n\n\
-         Env: HARNESS_DATA_DIR (default ~/.personal-harness), RUST_LOG"
+         Env: HARNESS_DATA_DIR (default ~/.personal-harness or %USERPROFILE%\\.personal-harness), RUST_LOG"
     );
     std::process::exit(2)
 }
 
 fn parse() -> Args {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let mut a = Args {
         data_dir: std::env::var_os("HARNESS_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".personal-harness")),
         port: None,
