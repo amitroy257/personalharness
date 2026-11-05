@@ -18,10 +18,24 @@ launch() {
   echo "app did not start"; adb logcat -d | tail -200; return 1
 }
 
+own_crash() {
+  # a crash of *this* app: Java FATAL EXCEPTION in our process, or a Rust panic
+  adb logcat -d | grep -E "FATAL EXCEPTION|panicked at|Process: $PKG" | grep -E "panicked at|Process: $PKG" >/dev/null
+}
+
 echo "== first launch"
 launch
 sleep 12
-adb shell pidof "$PKG" >/dev/null || { echo "app exited after launch"; adb logcat -d | grep -iE "panic|fatal|$PKG" | tail -80; exit 1; }
+if ! adb shell pidof "$PKG" >/dev/null; then
+  if own_crash; then
+    echo "app crashed after launch"; adb logcat -d | grep -E -A20 "FATAL EXCEPTION|panicked at" | head -80; exit 1
+  fi
+  echo "app was stopped by the system without crashing (see below); relaunching once"
+  adb logcat -d | grep -E "Killing .*$PKG" | tail -3
+  launch
+  sleep 12
+  adb shell pidof "$PKG" >/dev/null || { echo "app exited again after relaunch"; adb logcat -d | grep -iE "panic|fatal|Killing .*$PKG" | tail -40; exit 1; }
+fi
 
 echo "== backup disabled (app data must not leave the phone via Android backup)"
 if adb shell dumpsys package "$PKG" | grep -E "flags=|pkgFlags=" | grep -q "ALLOW_BACKUP"; then
@@ -59,7 +73,7 @@ python3 scripts/ci_summary.py selfcheck selfcheck.json "Privacy self-check — A
   --require os_sandbox,escape_other_apps,escape_read_app,dir_permissions,file_permissions,api_loopback_only,api_requires_token,api_host_check,api_no_cors
 
 echo "== crash check"
-if adb logcat -d | grep -E "FATAL EXCEPTION|panicked at" | grep -v "^--------- beginning"; then
-  echo "crash found in logcat"; exit 1
+if own_crash; then
+  echo "crash of $PKG found in logcat"; adb logcat -d | grep -E -A20 "FATAL EXCEPTION|panicked at" | head -60; exit 1
 fi
 echo "Android smoke test passed"

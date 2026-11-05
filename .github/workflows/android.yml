@@ -119,7 +119,9 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
-          target: google_apis
+          # plain AOSP image: no Google Play Services (the app does not use
+          # them, and their background crashes on fresh emulators kill apps)
+          target: default
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash scripts/android_smoke.sh out-debug/app-debug.apk
