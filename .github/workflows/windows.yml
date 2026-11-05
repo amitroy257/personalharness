@@ -11,7 +11,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.ref }}
+  # github.workflow is "Release" when called from the release workflow, so a
+  # branch push can never cancel a release build (and vice versa)
+  group: ${{ github.workflow }}-windows-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

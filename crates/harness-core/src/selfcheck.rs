@@ -67,6 +67,31 @@ fn mode_of(p: &std::path::Path) -> Option<u32> {
     std::fs::metadata(p).ok().map(|m| m.permissions().mode() & 0o777)
 }
 
+/// Try to list `path`. Only an OS "permission denied" proves isolation; a
+/// path that does not exist proves nothing and is reported as inconclusive.
+fn probe_denied(id: &'static str, label: &'static str, path: &std::path::Path) -> Check {
+    match std::fs::read_dir(path).map(|d| d.count()) {
+        Ok(n) => check(id, label, Status::Fail, format!("listed {n} entries in {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            check(id, label, Status::Pass, format!("{}: {e}", path.display()))
+        }
+        Err(e) => check(id, label, Status::Info, format!("inconclusive — {}: {e}", path.display())),
+    }
+}
+
+/// First candidate that exists decides (some apps are absent on some devices).
+fn probe_denied_any(id: &'static str, label: &'static str, candidates: &[&str]) -> Check {
+    let mut last = None;
+    for c in candidates {
+        let r = probe_denied(id, label, std::path::Path::new(c));
+        if r.status != Status::Info {
+            return r;
+        }
+        last = Some(r);
+    }
+    last.unwrap_or_else(|| check(id, label, Status::Info, "no candidate path"))
+}
+
 fn primary_lan_ip() -> Option<IpAddr> {
     // No packet is sent: connecting a UDP socket only selects a route.
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
@@ -134,15 +159,20 @@ pub async fn run(h: &Harness) -> Vec<Check> {
             if private { Status::Pass } else { Status::Fail },
             format!("Data folder: {}", data_dir.display()),
         ));
-        for (id, label, dir) in [
-            ("escape_other_apps", "Cannot list other apps' private data", "/data/data"),
-            ("escape_read_app", "Cannot read another app's files", "/data/data/com.android.providers.settings"),
-        ] {
-            out.push(match std::fs::read_dir(dir).map(|d| d.count()) {
-                Ok(n) => check(id, label, Status::Fail, format!("listed {n} entries in {dir}")),
-                Err(e) => check(id, label, Status::Pass, format!("{dir}: {e}")),
-            });
-        }
+        out.push(probe_denied("escape_other_apps", "Cannot list other apps' private data", std::path::Path::new("/data/data")));
+        out.push(probe_denied("escape_system_data", "Cannot read system data", std::path::Path::new("/data/system")));
+        out.push(probe_denied_any(
+            "escape_read_app",
+            "Cannot read another app's files",
+            &[
+                "/data/data/com.android.providers.contacts",
+                "/data/data/com.android.providers.media.module",
+                "/data/data/com.android.shell",
+                "/data/data/com.android.settings",
+                "/data/data/com.android.webview",
+                "/data/data/com.google.android.webview",
+            ],
+        ));
     } else {
         out.push(check("os_sandbox", "OS sandbox", Status::Info, "Linux/headless: protected by owner-only permissions"));
     }
@@ -298,35 +328,24 @@ fn escape_probes() -> Vec<Check> {
         out.push(check("escape_home", "Cannot read your home folder", Status::Fail, "could not resolve the home folder"));
         return out;
     };
-    let listed = std::fs::read_dir(&home).map(|d| d.count());
-    out.push(match listed {
-        Ok(n) => check(
-            "escape_read_home",
-            "Cannot read your home folder",
-            Status::Fail,
-            format!("listed {} entries in {}", n, home.display()),
-        ),
-        Err(e) => check("escape_read_home", "Cannot read your home folder", Status::Pass, format!("{}: {e}", home.display())),
-    });
-    for (id, label, dir) in [
-        ("escape_read_documents", "Cannot read ~/Documents", home.join("Documents")),
-        ("escape_read_desktop", "Cannot read ~/Desktop", home.join("Desktop")),
-    ] {
-        let r = std::fs::read_dir(&dir).map(|d| d.count());
-        out.push(match r {
-            Ok(n) => check(id, label, Status::Fail, format!("listed {n} entries")),
-            Err(e) => check(id, label, Status::Pass, format!("{e}")),
-        });
-    }
+    out.push(probe_denied("escape_read_home", "Cannot read your home folder", &home));
+    out.push(probe_denied("escape_read_documents", "Cannot read ~/Documents", &home.join("Documents")));
+    out.push(probe_denied("escape_read_desktop", "Cannot read ~/Desktop", &home.join("Desktop")));
     let probe = home.join(format!(".personal-harness-sandbox-probe-{}", std::process::id()));
     out.push(match std::fs::write(&probe, b"probe") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);
             check("escape_write_home", "Cannot write outside its container", Status::Fail, format!("created {}", probe.display()))
         }
-        Err(e) => {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             check("escape_write_home", "Cannot write outside its container", Status::Pass, format!("{}: {e}", probe.display()))
         }
+        Err(e) => check(
+            "escape_write_home",
+            "Cannot write outside its container",
+            Status::Info,
+            format!("inconclusive — {}: {e}", probe.display()),
+        ),
     });
     out
 }
@@ -334,6 +353,20 @@ fn escape_probes() -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probes_only_pass_on_permission_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        // readable folder: an escape succeeded -> fail
+        assert_eq!(probe_denied("x", "x", dir.path()).status, Status::Fail);
+        // missing folder proves nothing -> inconclusive, never a pass
+        let missing = dir.path().join("does-not-exist");
+        assert_eq!(probe_denied("x", "x", &missing).status, Status::Info);
+        let m = missing.to_string_lossy().to_string();
+        assert_eq!(probe_denied_any("x", "x", &[&m, &m]).status, Status::Info);
+        let d = dir.path().to_string_lossy().to_string();
+        assert_eq!(probe_denied_any("x", "x", &[&m, &d]).status, Status::Fail, "first existing candidate decides");
+    }
 
     #[test]
     fn lan_ip_is_not_loopback() {

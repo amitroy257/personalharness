@@ -70,7 +70,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4141/v1/models)
 echo "unauthenticated /v1/models -> $code"; test "$code" = "401"
 curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/selfcheck > selfcheck.json
 python3 scripts/ci_summary.py selfcheck selfcheck.json "Privacy self-check — Android app (emulator)" \
-  --require os_sandbox,escape_other_apps,escape_read_app,dir_permissions,file_permissions,api_loopback_only,api_requires_token,api_host_check,api_no_cors
+  --require os_sandbox,escape_other_apps,escape_system_data,escape_read_app,dir_permissions,file_permissions,api_loopback_only,api_requires_token,api_host_check,api_no_cors
 
 echo "== crash check"
 if own_crash; then
