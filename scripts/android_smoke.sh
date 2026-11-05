@@ -41,7 +41,10 @@ echo "== enable the local API so the self-check can be queried, then relaunch"
 adb shell am force-stop "$PKG"
 adb shell run-as "$PKG" cat "$SETTINGS" | tr -d '\r' > settings.device.json
 python3 -c "import json; d=json.load(open('settings.device.json')); d['server']['enabled']=True; json.dump(d, open('settings.device.json','w'), indent=2)"
-adb exec-in "run-as $PKG sh -c 'cat > $SETTINGS'" < settings.device.json
+adb push settings.device.json /data/local/tmp/ph-settings.json >/dev/null
+adb shell chmod 644 /data/local/tmp/ph-settings.json
+adb shell run-as "$PKG" cp /data/local/tmp/ph-settings.json "$SETTINGS"
+adb shell rm -f /data/local/tmp/ph-settings.json
 adb shell run-as "$PKG" cat "$SETTINGS" | grep -q '"enabled": true' || { echo "could not enable the local API"; exit 1; }
 rm -f settings.device.json
 launch
