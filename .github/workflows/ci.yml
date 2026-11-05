@@ -32,10 +32,10 @@ jobs:
       - name: Type-check and build the UI
         run: npm run build
 
-      - name: Rust tests — unit, end-to-end, privacy
+      - name: Rust tests — unit, end-to-end, privacy, two-device sync, sync server
         run: |
           set -o pipefail
-          cargo test -p harness-core -p harness-cli --locked 2>&1 | tee cargo-test.log
+          cargo test -p harness-core -p harness-cli -p harness-sync-server --locked 2>&1 | tee cargo-test.log
           python3 scripts/ci_summary.py cargo cargo-test.log "Rust tests (Linux)"
 
       - name: Lint (rustfmt + clippy, warnings are errors)
@@ -45,6 +45,22 @@ jobs:
 
       - name: Compile the desktop app crate
         run: cargo check -p personal-harness --locked
+
+  sync-server-image:
+    name: Sync server Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -f deploy/sync-server/Dockerfile -t harness-sync .
+      - name: Run it and check health
+        run: |
+          docker run -d --name hs -p 8787:8787 harness-sync
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:8787/health
+          docker exec hs id
+          echo "### Sync server image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Built and started; /health OK; runs as non-root ($(docker exec hs id -u -n))." >> "$GITHUB_STEP_SUMMARY"
 
   audit:
     name: Dependency audit

@@ -1,0 +1,24 @@
+# Fly.io config for the sync server. From the repository root:
+#   fly launch --copy-config --config deploy/sync-server/fly.toml --no-deploy
+#   fly volumes create harness_sync_data --size 1
+#   fly deploy --config deploy/sync-server/fly.toml
+app = "personal-harness-sync-change-me"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Fly's proxy sets Fly-Client-IP; used for login rate limiting
+  TRUST_PROXY = "1"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[mounts]]
+  source = "harness_sync_data"
+  destination = "/data"

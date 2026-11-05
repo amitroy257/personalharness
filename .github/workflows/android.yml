@@ -1,0 +1,112 @@
+name: Android app (APK)
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build APK + emulator test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      APP_ID: io.github.amitroy257.personalharness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: npm ci
+
+      - name: Android SDK / NDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          ls "$ANDROID_NDK_LATEST_HOME" | head -3
+
+      - name: Generate the Android project (+ app icons)
+        run: |
+          npx tauri android init --ci
+          npx tauri icon src-tauri/app-icon.png
+
+      - name: Build release APK (arm64 + armv7 phones)
+        run: npx tauri android build --apk --target aarch64 --target armv7 --ci
+
+      - name: Sign the release APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name "*release-unsigned.apk" | head -1)
+          echo "unsigned: $UNSIGNED"
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.keystore
+            NOTE="Signed with your release key (secret ANDROID_KEYSTORE_B64)."
+          else
+            KEYSTORE_PASSWORD="temp-$(openssl rand -hex 12)"; KEY_ALIAS=harness
+            keytool -genkeypair -v -keystore release.keystore -alias "$KEY_ALIAS" -keyalg RSA -keysize 4096 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" -dname "CN=Personal Harness" >/dev/null 2>&1
+            NOTE="⚠️ Signed with a temporary key (no ANDROID_KEYSTORE_B64 secret set). Installing a later build over this one requires uninstalling first — sign in to sync before you do. See README → Android."
+          fi
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" aligned.apk
+          mkdir -p out
+          "$BT/apksigner" sign --ks release.keystore --ks-key-alias "$KEY_ALIAS" --ks-pass "pass:$KEYSTORE_PASSWORD" --key-pass "pass:$KEYSTORE_PASSWORD" \
+            --out "out/PersonalHarness-${GITHUB_REF_NAME//\//-}-android.apk" aligned.apk
+          "$BT/apksigner" verify --print-certs out/*.apk | head -5
+          rm -f release.keystore aligned.apk
+          ls -la out/
+          { echo "### Android APK"; echo ""; echo "$NOTE"; echo ""; ls -la out/ | tail -n +2 | awk '{print "- `" $9 "` (" $5 " bytes)"}'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build debug APK for the emulator (x86_64)
+        run: npx tauri android build --apk --debug --target x86_64 --ci
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Smoke + sandbox test on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/android_smoke.sh "$(find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PersonalHarness-Android
+          path: out/*.apk
+          if-no-files-found: error
+
+      - name: Attach APK to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.apk
