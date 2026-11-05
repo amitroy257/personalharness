@@ -79,17 +79,39 @@ fn probe_denied(id: &'static str, label: &'static str, path: &std::path::Path) -
     }
 }
 
-/// First candidate that exists decides (some apps are absent on some devices).
-fn probe_denied_any(id: &'static str, label: &'static str, candidates: &[&str]) -> Check {
-    let mut last = None;
-    for c in candidates {
-        let r = probe_denied(id, label, std::path::Path::new(c));
-        if r.status != Status::Info {
-            return r;
+/// Packages that are always installed (this app itself needs a WebView provider).
+pub const ANDROID_PROBE_PACKAGES: &[&str] = &[
+    "com.android.webview",
+    "com.google.android.webview",
+    "com.android.chrome",
+    "com.android.providers.contacts",
+    "com.android.providers.media.module",
+    "com.android.settings",
+];
+
+/// Another app's private folder must be either denied (Android ≤ 10) or not
+/// visible at all (Android 11+ "app data isolation" mounts a per-app view of
+/// /data/data). Readable is a failure.
+fn probe_other_app_android() -> Check {
+    let (id, label) = ("escape_read_app", "Cannot read another app's files");
+    let mut hidden = Vec::new();
+    for pkg in ANDROID_PROBE_PACKAGES {
+        let path = format!("/data/data/{pkg}");
+        let r = probe_denied(id, label, std::path::Path::new(&path));
+        match r.status {
+            Status::Info => hidden.push(path),
+            _ => return r,
         }
-        last = Some(r);
     }
-    last.unwrap_or_else(|| check(id, label, Status::Info, "no candidate path"))
+    check(
+        id,
+        label,
+        Status::Pass,
+        format!(
+            "other apps' folders are not visible to this app (Android app-data isolation): {} — at least one of these packages (the WebView provider) is always installed",
+            hidden.join(", ")
+        ),
+    )
 }
 
 fn primary_lan_ip() -> Option<IpAddr> {
@@ -161,18 +183,7 @@ pub async fn run(h: &Harness) -> Vec<Check> {
         ));
         out.push(probe_denied("escape_other_apps", "Cannot list other apps' private data", std::path::Path::new("/data/data")));
         out.push(probe_denied("escape_system_data", "Cannot read system data", std::path::Path::new("/data/system")));
-        out.push(probe_denied_any(
-            "escape_read_app",
-            "Cannot read another app's files",
-            &[
-                "/data/data/com.android.providers.contacts",
-                "/data/data/com.android.providers.media.module",
-                "/data/data/com.android.shell",
-                "/data/data/com.android.settings",
-                "/data/data/com.android.webview",
-                "/data/data/com.google.android.webview",
-            ],
-        ));
+        out.push(probe_other_app_android());
     } else {
         out.push(check("os_sandbox", "OS sandbox", Status::Info, "Linux/headless: protected by owner-only permissions"));
     }
@@ -362,10 +373,6 @@ mod tests {
         // missing folder proves nothing -> inconclusive, never a pass
         let missing = dir.path().join("does-not-exist");
         assert_eq!(probe_denied("x", "x", &missing).status, Status::Info);
-        let m = missing.to_string_lossy().to_string();
-        assert_eq!(probe_denied_any("x", "x", &[&m, &m]).status, Status::Info);
-        let d = dir.path().to_string_lossy().to_string();
-        assert_eq!(probe_denied_any("x", "x", &[&m, &d]).status, Status::Fail, "first existing candidate decides");
     }
 
     #[test]

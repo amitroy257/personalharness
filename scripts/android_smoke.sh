@@ -72,6 +72,12 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4141/v1/selfcheck > 
 python3 scripts/ci_summary.py selfcheck selfcheck.json "Privacy self-check — Android app (emulator)" \
   --require os_sandbox,escape_other_apps,escape_system_data,escape_read_app,dir_permissions,file_permissions,api_loopback_only,api_requires_token,api_host_check,api_no_cors
 
+echo "== cross-check: probed packages really exist (so 'not visible' means isolation, not absence)"
+INSTALLED=$(adb shell pm list packages | tr -d '\r' | sed 's/^package://' | grep -xE 'com\.android\.webview|com\.google\.android\.webview|com\.android\.chrome|com\.android\.providers\.contacts|com\.android\.providers\.media\.module|com\.android\.settings' || true)
+echo "$INSTALLED"
+[ -n "$INSTALLED" ] || { echo "none of the probed packages is installed: the isolation check proves nothing"; exit 1; }
+{ echo ""; echo "Cross-check from adb: these probed packages are installed, yet invisible to the app → Android app-data isolation:"; echo "$INSTALLED" | sed 's/^/- `/; s/$/`/'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
 echo "== crash check"
 if own_crash; then
   echo "crash of $PKG found in logcat"; adb logcat -d | grep -E -A20 "FATAL EXCEPTION|panicked at" | head -60; exit 1
