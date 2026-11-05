@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Product** | Personal Harness 0.1.0 (macOS universal DMG, Windows x64 NSIS/MSI, headless server) |
+| **Product** | Personal Harness 0.1.0 (macOS universal DMG, Windows x64 NSIS/MSI, Android APK, headless server, self-hosted sync server) |
 | **Report date** | 2026-11-04 |
 | **Prepared by** | SQA review (Claude, acting as senior SQA engineer) |
 | **Verdict** | ✅ **PASS for personal use**, with the residual risks in §7 |
@@ -183,7 +183,27 @@ Defence in depth: the desktop CSP allows scripts only from the app itself, image
 | `npm audit` (build and test tooling) | ✅ 0, after the F5 fix |
 | `cargo audit` (RustSec: 540 crates against 1,403 advisories) | ✅ **0 vulnerabilities**. 5 warnings (4 *unmaintained*, 1 *unsound*: `glib`, `zvariant`, `zvariant_derive`, `zbus_names`, `proc-macro-error`), all in the **Linux-only** GTK / D-Bus dependency chain. Verified with `cargo tree` that none of these crates is in the dependency graph of the Apple Silicon, Intel Mac or Windows builds. Tracked; resolves when Tauri updates its Linux stack |
 
-### 4.9 Code-quality gates (block merges)
+### 4.9 End-to-end encrypted sync (zero knowledge)
+
+Design: password → Argon2id → HKDF splits it into a *login key* and a *wrapping key*. The server keeps only an Argon2 hash of the login key. A random data key, wrapped by the wrapping key, encrypts every record with XChaCha20-Poly1305. The record id is bound in as associated data, and record names are HMACs. Verified by `tests/sync_e2e.rs` (two real devices plus a real server) and `harness-sync-server/tests/server.rs`.
+
+| ID | Requirement | Result |
+|---|---|:-:|
+| Y-01 | **The server stores only ciphertext.** After a full two-device session, the server's raw database/WAL bytes are scanned for chat text, titles, API keys, settings names and the password. **None are found.** | ✅ |
+| Y-02 | A wrong password can neither sign in nor unwrap the key. A server cannot swap records between ids (AEAD over the record id, plus a re-derived id check) or alter them (tamper → decryption fails) | ✅ |
+| Y-03 | Devices converge: initial upload of existing data, restore on a new device, ratings, new chats, settings, **provider keys** (and their model lists), deletions, concurrent edits (most recent edit wins, deterministic tie-break) | ✅ |
+| Y-04 | A fresh device's default settings never overwrite the account's settings | ✅ |
+| Y-05 | Device-specific values (local API port and token) are never synced | ✅ |
+| Y-06 | Server: sign-up limited to the owner or an invite code; 10-failure lockout; identical answers for unknown emails (no account enumeration); every sync endpoint needs a session; sign-out revokes it; deleting the account needs the password and leaves no record bytes on disk; quota and input validation | ✅ |
+| Y-07 | The client refuses plain `http://` to public hosts, passwords under 10 characters, and servers that ask for weakened key derivation (< 8 MiB) | ✅ |
+| Y-08 | The local session token and data key on disk are owner-only (Unix) or DPAPI-encrypted (Windows) | ✅ |
+| Y-09 | Live UI run: laptop creates the account; phone (Pixel 7 viewport) signs in and sees every chat; chats with the synced keys; the laptop then sees the phone's chat; no console errors | ✅ exploratory |
+
+### 4.10 Android
+
+<!-- ANDROID_EVIDENCE -->
+
+### 4.11 Code-quality gates (block merges)
 
 `rustfmt --check` · `clippy -D warnings` · TypeScript `strict` · 10 UI tests · Rust tests on every push: **42/42 Linux, 42/42 macOS, 40/40 Windows**. The counts differ because 3 Unix-only permission tests don't apply on Windows, and 1 Windows-only DPAPI test runs there instead.
 
@@ -196,6 +216,15 @@ Defence in depth: the desktop CSP allows scripts only from the app itself, image
 | **F3** | Medium (performance) | 166–178 ms of overhead per `auto` request with a large history | Usage aggregates recomputed on every request | 15 s cache with explicit invalidation | §4.7 measurement |
 | **F4** | Low | `<svg>` elements survived sanitising (their handlers were already stripped) | Allow-list too broad | Forbid `svg`/`math` in rendered output | `format.test.ts` |
 | **F5** | Medium (supply chain, dev only) | Test runner vitest 3 pulled in 2 critical + 1 moderate advisories | Vulnerable transitive dependencies (`tinypool`, `@vitest/mocker`) | Upgrade to vitest 5 | `npm audit` CI step |
+
+Found while testing sync and the phone version:
+
+| ID | Severity | Finding | Fix | Regression test |
+|---|---|---|---|---|
+| **F6** | Medium | Messages saved in the same millisecond appeared in a different order on other devices, because the tie-break was local insertion order | Strictly increasing timestamps within each conversation | `sync_e2e` |
+| **F7** | Medium | A new device received the synced provider keys but never fetched those providers' model lists, so it had keys but no models | Refresh model lists of providers that arrive through sync | `sync_e2e` + live UI run |
+| **F8** | Medium (UX) | On phones, wide code blocks pushed chat bubbles off-screen, and the 7th tab was unreachable. The first automated check missed it because it only measured page overflow; it now measures every bubble and the message pane | Shrinkable grid items, code scrolls inside its block, short tab labels | Playwright overflow checks |
+| **F9** | High (privacy, preventive) | Android backup could copy app data (including API keys) to cloud storage or another phone | Manifest hardened (`allowBackup=false`); the emulator test asserts the flag is off | `android_smoke.sh` |
 
 Found and fixed earlier, during development testing:
 - "Hot" ranking was empty when Hugging Face or OpenRouter were unreachable. Fixed with a fallback to the date each model first appeared on the leaderboard.
@@ -236,6 +265,10 @@ Found and fixed earlier, during development testing:
 | R-5 | Requests rejected with HTTP 400 are retried on up to `max_attempts` routes, which can spend quota on a malformed request | Low | Accepted. Configurable in Local API → Routing |
 | R-6 | LMArena data comes from a community mirror that has been stale since 2026-10-07 | Low | Bundled snapshot plus walk-back. Artificial Analysis (optional key) gives an independent strength source |
 | R-7 | No auto-update, so security fixes need a manual reinstall | Low | Add the Tauri updater once releases are signed |
+| R-8 | Sync metadata visible to the server: your email, number and size of records, timing, IP address | Low (inherent) | Self-host; use Tailscale or a private network for extra privacy |
+| R-9 | "Most recent edit wins" depends on device clocks; a badly wrong clock can win a conflict it shouldn't | Low | Keep automatic time enabled on devices |
+| R-10 | Android: keys are protected by the app sandbox but not by the Android Keystore; a rooted phone could read them | Low | Future: wrap secrets with an Android Keystore key |
+| R-11 | Android builds use a temporary signing key until you add the signing secrets, so updates then need an uninstall (sync restores the data) | Low | Add the three signing secrets (README → Android) |
 
 ## 8. Manual acceptance checklist (with real keys)
 

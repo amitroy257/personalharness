@@ -49,6 +49,17 @@ jobs:
           npx tauri android init --ci
           npx tauri icon src-tauri/app-icon.png
 
+      - name: Harden the manifest (no cloud / device-to-device backup of app data)
+        run: |
+          M=src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          grep -o '<application[^>]*' "$M" | head -1
+          # API keys and chats must never be copied to Google Drive or another phone by Android backup
+          sed -i 's/android:allowBackup="true"/android:allowBackup="false"/' "$M"
+          grep -q 'android:allowBackup=' "$M" || sed -i 's/<application/<application android:allowBackup="false"/' "$M"
+          grep -q 'android:fullBackupContent=' "$M" || sed -i 's/<application/<application android:fullBackupContent="false"/' "$M"
+          grep -o '<application[^>]*' "$M" | head -1
+          grep -q 'android:allowBackup="false"' "$M"
+
       - name: Build release APK (arm64 + armv7 phones)
         run: npx tauri android build --apk --target aarch64 --target armv7 --ci
 

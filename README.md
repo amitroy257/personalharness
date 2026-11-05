@@ -1,13 +1,13 @@
 # Personal Harness
 
-[![CI](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml) [![macOS app](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml) [![Windows app](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml)
+[![CI](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml) [![macOS app](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml) [![Windows app](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml) [![Android app](https://github.com/amitroy257/personalharness/actions/workflows/android.yml/badge.svg)](https://github.com/amitroy257/personalharness/actions/workflows/android.yml)
 
-A personal, **OpenRouter-style** app for **macOS and Windows**. It brings together the **free tiers** of many LLM providers behind:
+A personal, **OpenRouter-style** app for **macOS, Windows and Android**. It brings together the **free tiers** of many LLM providers behind:
 
 - **a chat app**, and
 - **one local OpenAI-compatible API** (`http://127.0.0.1:4141/v1`) that Cursor, VS Code extensions, scripts and other tools can use.
 
-It also **ranks the models you can actually use** (strongest, most used, hot and personally best) and recommends which one to use. Everything is stored **only on your computer**: inside the App Sandbox on macOS, and in your local Windows profile with API keys encrypted by DPAPI on Windows.
+It also **ranks the models you can actually use** (strongest, most used, hot and personally best) and recommends which one to use. Everything is stored **on your own devices**: inside the App Sandbox on macOS, in your local Windows profile with API keys encrypted by DPAPI on Windows, and in Android's private app storage on phones. If you want your chats and settings on all your devices, optional **end-to-end encrypted sync** goes through a server you run yourself, which can't read your data.
 
 <p align="center"><img src="src-tauri/app-icon.png" width="96" alt="app icon"></p>
 
@@ -65,6 +65,47 @@ Every push also builds Windows x64 installers (Windows 10 and 11; also runs on W
 3. The installer is not code-signed (that needs a paid certificate), so **SmartScreen** may say "Windows protected your PC". Click **More info → Run anyway**.
 
 Closing the window keeps the app running in the **system tray** (near the clock), so the local API stays available. Left-click the tray icon to reopen the window; right-click it for **Quit**. Opening the app again from the Start menu brings back the running instance rather than starting a second copy. The installer adds the Microsoft Edge WebView2 runtime if it is missing (it is preinstalled on Windows 10/11).
+
+## Install on Android
+
+Every push also builds an Android APK for 64-bit and 32-bit ARM phones (Android 7+):
+
+1. Open **Actions → "Android app (APK)"**, pick the latest green run, and download **PersonalHarness-Android** (a zip containing the `.apk`). Tagged versions attach it to the **GitHub Release**.
+2. Copy the `.apk` to your phone and open it. Android asks you to allow installs from that app (Files or Chrome) once. Then tap **Install**.
+3. Optional: sign in under **Sync** to bring over your chats, providers and keys from your computer (see below).
+
+On phones the local API is off by default, because other phone apps rarely need it. You can turn it on under **API**.
+
+**Updating:** Android only installs an update over an existing install if both APKs are signed with the same key. Until you set your own key, each CI build uses a temporary one, so you'd have to uninstall before installing a newer build; sign in to Sync first and your data comes back. To get permanent in-place updates, create a key once:
+
+```bash
+keytool -genkeypair -v -keystore harness-release.keystore -alias harness -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Then add three repository secrets in **Settings → Secrets and variables → Actions**:
+- `ANDROID_KEYSTORE_B64`: the output of `base64 -w0 harness-release.keystore`
+- `ANDROID_KEYSTORE_PASSWORD`: the keystore password
+- `ANDROID_KEY_ALIAS`: `harness`
+
+Keep the keystore file somewhere safe.
+
+## Sync between your phone and computers
+
+Sign in with the same account on each device, and chats (including deletions and 👍/👎), providers, **API keys**, hidden models and settings stay in sync automatically.
+
+- **End-to-end encrypted, zero-knowledge:**
+  - Your data is encrypted on the device with XChaCha20-Poly1305, using a key derived from your password with Argon2id.
+  - The password never leaves your devices.
+  - The server stores only unreadable records; even their names are hashed.
+  - CI checks that the server's database contains no readable chat text, titles or API keys.
+- **Your own server:** a small binary you run free on Fly.io, a VPS, or a computer at home. Only you, and anyone you give a sign-up code, can create accounts. Setup takes a few minutes: **[docs/SYNC_SERVER.md](docs/SYNC_SERVER.md)**.
+- **Steps:**
+  1. **Sync → Create account** on one device (server URL, email, password).
+  2. **Sync → Sign in** on the others.
+  3. Changes upload within a few seconds and arrive on other devices within a minute, or tap **Sync now**.
+- **Not synced (stays per device):** the local API port and token, and the usage statistics behind your personal rankings.
+- **Conflicts:** if the same item is edited on two devices, the most recent edit wins.
+- ⚠️ **If you forget your password, the synced copy can't be recovered.** Nobody can reset it, not even the server owner. Data stored on each device is not affected.
 
 ## Get free keys
 
@@ -133,6 +174,7 @@ Then **your own results** are blended in: success rate, speed and 👍/👎 in c
 - **Where data lives:**
   - macOS: `~/Library/Containers/io.github.amitroy257.personalharness/Data/Library/Application Support/io.github.amitroy257.personalharness/`
   - Windows: `%LOCALAPPDATA%\io.github.amitroy257.personalharness\` (the local, non-roaming profile, so it is never synced to other machines)
+  - Android: the app's private storage (`/data/user/0/io.github.amitroy257.personalharness/`), which other apps cannot read
   - In both: `settings.json` holds keys, preferences and the local API token; `harness.db` (SQLite) holds chats, per-request metadata (model, status, timing, token counts) and ratings. Local API requests are logged as **metadata only, never prompt text**.
 - **macOS sandbox:** the app has only the `app-sandbox`, `network.client` and `network.server` entitlements. It cannot read your files. `settings.json` is mode `0600`.
 - **Windows protection:** Windows has no App Sandbox for ordinary desktop apps. Instead, provider keys, ranking keys and the local API token are **encrypted with DPAPI** (current-user scope), so only your Windows account on this PC can decrypt them. Copying `settings.json` to another account or machine yields nothing usable.
@@ -170,7 +212,9 @@ Refresh the bundled leaderboard snapshot with `python3 scripts/build_baseline.py
 ```
 crates/harness-core   Router, providers, ranking, local API, SQLite store (all logic, tested)
 crates/harness-cli    `harness-server`: headless API + web UI
-src-tauri             Desktop shell (macOS + Windows): window, menu bar / tray, sandbox entitlements, DMG / NSIS / MSI config
+crates/harness-sync-server  `harness-sync`: zero-knowledge sync server (self-hosted)
+deploy/sync-server    Dockerfile + fly.toml for the sync server
+src-tauri             App shell (macOS, Windows, Android): window, menu bar / tray, sandbox entitlements, DMG / NSIS / MSI / APK config
 src                   React UI (Chat, Rankings, Models, Providers, Local API, Privacy & Settings)
 scripts               Baseline leaderboard generator, icon generator
 ```

@@ -23,6 +23,12 @@ launch
 sleep 12
 adb shell pidof "$PKG" >/dev/null || { echo "app exited after launch"; adb logcat -d | grep -iE "panic|fatal|$PKG" | tail -80; exit 1; }
 
+echo "== backup disabled (app data must not leave the phone via Android backup)"
+if adb shell dumpsys package "$PKG" | grep -E "flags=|pkgFlags=" | grep -q "ALLOW_BACKUP"; then
+  echo "ALLOW_BACKUP is set"; exit 1
+fi
+echo "ALLOW_BACKUP not set: OK"
+
 echo "== app-private data"
 SETTINGS=$(adb shell run-as "$PKG" find . -name settings.json 2>/dev/null | tr -d '\r' | head -1)
 [ -n "$SETTINGS" ] || { echo "settings.json not created in private storage"; exit 1; }
