@@ -1,13 +1,22 @@
 name: Release
 
-# Push a version tag to publish a release with every installer:
+# Publish a release with every installer, either by pushing a version tag:
 #   git tag v0.1.0 && git push origin v0.1.0
-# Each platform is built and smoke-tested on a real runner; the release is
-# only published if all of them pass.
+# or from the Actions tab: Release → Run workflow → version 0.1.0 (the tag is
+# then created on the commit that was built). Each platform is built and
+# smoke-tested on a real runner; the release is only published if all pass.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.1.0 (must match src-tauri/tauri.conf.json)"
+        required: true
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
 
 permissions:
   contents: write
@@ -25,8 +34,8 @@ jobs:
       - name: Tag must match the app version
         run: |
           APP="v$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
-          echo "tag: $GITHUB_REF_NAME, app version: $APP"
-          test "$GITHUB_REF_NAME" = "$APP" || { echo "::error::Tag $GITHUB_REF_NAME does not match app version $APP in src-tauri/tauri.conf.json"; exit 1; }
+          echo "tag: $TAG, app version: $APP"
+          test "$TAG" = "$APP" || { echo "::error::Tag $TAG does not match app version $APP in src-tauri/tauri.conf.json"; exit 1; }
 
   macos:
     needs: check
@@ -56,7 +65,7 @@ jobs:
           SIGNED_APK: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
         run: |
           set -euo pipefail
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${TAG#v}"
           mkdir -p release
           pick() { f=$(find artifacts -type f -name "$1" | head -1); [ -n "$f" ] || { echo "::error::missing $1"; exit 1; }; cp "$f" "release/$2"; }
           pick '*.dmg'        "PersonalHarness-${VER}-macOS-universal.dmg"
@@ -100,8 +109,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Personal Harness ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Personal Harness ${{ env.TAG }}
           body_path: NOTES.md
           fail_on_unmatched_files: true
           files: |
