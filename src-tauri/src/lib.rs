@@ -8,7 +8,7 @@ use std::sync::Arc;
 use harness_core::{commands, Harness};
 use serde_json::Value;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{Manager, State};
 
 #[tauri::command]
 async fn call(state: State<'_, Arc<Harness>>, name: String, args: Value) -> Result<Value, String> {
@@ -26,8 +26,10 @@ async fn chat(state: State<'_, Arc<Harness>>, args: Value, on_event: Channel<Val
     task.await.map_err(|e| e.to_string())
 }
 
-#[allow(dead_code)]
-fn show_main<R: Runtime>(app: &AppHandle<R>) {
+/// Bring the main window back (tray, second launch, Dock click). Desktop only:
+/// on phones the OS manages the app's single window.
+#[cfg(desktop)]
+fn show_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
