@@ -37,8 +37,13 @@ adb shell run-as "$PKG" ls -la "$(dirname "$SETTINGS")"
 grep -q '"enabled": false' <(adb shell run-as "$PKG" cat "$SETTINGS") && echo "local API is off by default on phones: OK"
 
 echo "== enable the local API so the self-check can be queried, then relaunch"
-adb shell run-as "$PKG" sed -i 's/"enabled": false/"enabled": true/' "$SETTINGS"
+# edit on the host and stream back (quotes do not survive adb's shell re-parsing)
 adb shell am force-stop "$PKG"
+adb shell run-as "$PKG" cat "$SETTINGS" | tr -d '\r' > settings.device.json
+python3 -c "import json; d=json.load(open('settings.device.json')); d['server']['enabled']=True; json.dump(d, open('settings.device.json','w'), indent=2)"
+adb exec-in "run-as $PKG sh -c 'cat > $SETTINGS'" < settings.device.json
+adb shell run-as "$PKG" cat "$SETTINGS" | grep -q '"enabled": true' || { echo "could not enable the local API"; exit 1; }
+rm -f settings.device.json
 launch
 adb forward tcp:4141 tcp:4141
 for i in $(seq 1 60); do curl -sf http://127.0.0.1:4141/health && break; sleep 1; done
