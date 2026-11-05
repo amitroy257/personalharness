@@ -15,11 +15,12 @@ It also **ranks the models you can actually use** (strongest, most used, hot and
 
 ## Quality & testing
 
-Every push is tested on **Linux, macOS and Windows**. The macOS and Windows jobs install the real app, launch it, and make it attack its own privacy guarantees. Each run's **Summary** tab on GitHub shows a pass/fail table with evidence. Full SQA report: **[docs/TEST_REPORT.md](docs/TEST_REPORT.md)**.
+Every push is tested on **Linux, macOS, Windows and Android**. The macOS, Windows and Android jobs install the real app, launch it, and make it attack its own privacy guarantees. Each run's **Summary** tab on GitHub shows a pass/fail table with evidence. Full SQA report: **[docs/TEST_REPORT.md](docs/TEST_REPORT.md)**.
 
 | Area | What is proven | Status |
 |---|---|:-:|
 | **Data sandboxing (macOS)** | The installed app tries to list your home folder, read `~/Documents` and `~/Desktop`, and write into your home folder. The App Sandbox must deny every attempt, or the build fails. All data stays in its container. | ✅ |
+| **Data sandboxing (Android)** | On an Android 14 emulator the app cannot list other apps' data or system data (permission denied), and other apps' folders are invisible to it (app-data isolation, cross-checked via adb). Data is in private storage (`0700`/`0600`), backup is disabled, and the local API is off by default | ✅ |
 | **Data protection (Windows)** | Keys and token are DPAPI-encrypted on disk (CI decrypts them with Windows' own API to prove it); data stays in the local, non-roaming profile | ✅ |
 | **Deleted data is really gone** | After deleting a chat, its text is not recoverable from the raw database, WAL or SHM files | ✅ |
 | **Owner-only files** | Data folder `0700`, settings and database files `0600` | ✅ |
@@ -27,12 +28,13 @@ Every push is tested on **Linux, macOS and Windows**. The macOS and Windows jobs
 | **Local API is local** | Unreachable from the network, token required (401), foreign Host rejected (403, anti DNS-rebinding), no CORS | ✅ |
 | **No unexpected traffic** | With public data off, the ranking client makes zero requests; optional keys go only to their own service | ✅ |
 | **Malicious model output** | Scripts, event handlers, `javascript:` links, tracking pixels and iframes are neutralised (unit tests plus a live browser attack) | ✅ |
+| **Encrypted sync (zero knowledge)** | Two real devices sync through a real server: chats, ratings, deletions, settings and keys. Afterwards the server's raw database is scanned: no chat text, titles, API keys or password. The server enforces lockout, owner-only sign-up, no email enumeration, and account deletion | ✅ |
 | **Routing** | Rate-limit fallback to the same model on another provider, cooldowns, streaming, `auto` presets | ✅ |
-| **Installers** | Universal DMG (arm64 + x86_64), NSIS per-user setup + MSI; launch in about 2 s; single instance | ✅ |
+| **Installers** | Universal DMG (arm64 + x86_64), NSIS per-user setup + MSI, signed APK (arm64 + armv7); each launches in about 2 s. Published together only when all pass ([v0.1.0](https://github.com/amitroy257/personalharness/releases/tag/v0.1.0)) | ✅ |
 | **Dependencies** | `npm audit` 0 vulnerabilities; `cargo audit` 0 vulnerabilities across 540 crates | ✅ |
 | **Code quality** | rustfmt, clippy with warnings as errors, TypeScript strict; 42 Rust + 10 UI tests | ✅ |
 
-The review found 5 defects in the shipped code, including one **High**: deleted chats were recoverable from SQLite's write-ahead log. All are fixed with regression tests; see §5 of the report. Known residual risks, the main one being that real-provider behaviour is tested with mocks in CI, are listed in §7.
+The reviews found 10 defects, including two **High** ones: deleted chats were recoverable from SQLite's write-ahead log, and Android backup could have copied API keys off the phone. All are fixed with regression tests; see §5 of the report. Known residual risks, the main one being that real-provider behaviour is tested with mocks in CI, are listed in §7.
 
 Run the same privacy checks on your own machine: **Privacy & Settings → Run privacy check**.
 

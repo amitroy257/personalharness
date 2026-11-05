@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| **Product** | Personal Harness 0.1.0 (macOS universal DMG, Windows x64 NSIS/MSI, Android APK, headless server, self-hosted sync server) |
+| **Product** | Personal Harness 0.1.0 (macOS universal DMG, Windows x64 NSIS/MSI, Android APK, headless server, self-hosted sync server). Released as [v0.1.0](https://github.com/amitroy257/personalharness/releases/tag/v0.1.0) |
 | **Report date** | 2026-11-04 |
 | **Prepared by** | SQA review (Claude, acting as senior SQA engineer) |
 | **Verdict** | ✅ **PASS for personal use**, with the residual risks in §7 |
-| **Live evidence** | Every CI run's **Summary** tab shows a pass/fail table: [CI](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml) · [macOS](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml) · [Windows](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml) |
+| **Live evidence** | Every CI run's **Summary** tab shows a pass/fail table: [CI](https://github.com/amitroy257/personalharness/actions/workflows/ci.yml) · [macOS](https://github.com/amitroy257/personalharness/actions/workflows/macos.yml) · [Windows](https://github.com/amitroy257/personalharness/actions/workflows/windows.yml) · [Android](https://github.com/amitroy257/personalharness/actions/workflows/android.yml) |
 
 ---
 
@@ -18,8 +18,10 @@ The headline requirement is **"data must stay sandboxed on the local device."** 
 - **Windows:** ordinary desktop apps have no App-Sandbox equivalent, so the compensating controls are tested instead:
   - data lives in the **local (non-roaming)** profile;
   - every API key and the local token are **encrypted with DPAPI**. CI proves this by reading the raw file and decrypting it with Windows' own `ProtectedData` API.
+- **Android:** the app lives in Android's per-app sandbox. On an Android 14 emulator, reading other apps' data or system data is **denied**, other apps' folders are **invisible** to it, and Android backup is **off**, so data can't leave the phone that way.
+- **Sync (optional):** the self-hosted server stores only end-to-end-encrypted records. After a two-device session its raw database contains no chat text, titles, API keys or password.
 
-The review found **5 defects in the shipped code, one rated High**: deleted chats could be recovered from SQLite's write-ahead log. **All 5 are fixed and guarded by regression tests.** Another 5 issues were found and fixed during development. Dependency audits are clean.
+The reviews found **10 defects, two rated High**: deleted chats could be recovered from SQLite's write-ahead log, and Android backup could have copied API keys off the phone. **All 10 are fixed and guarded by regression tests.** Another 5 issues were found and fixed during development. Dependency audits are clean.
 
 ## 2. Scope and approach
 
@@ -201,7 +203,34 @@ Design: password → Argon2id → HKDF splits it into a *login key* and a *wrapp
 
 ### 4.10 Android
 
-<!-- ANDROID_EVIDENCE -->
+Recorded in CI on an **Android 14** emulator (x86_64 AOSP image) from the debug build of the same code as the release APK ([run 41960943086](https://github.com/amitroy257/personalharness/actions/runs/41960943086), commit `09edb40`).
+
+| ID | Check | Result |
+|---|---|:-:|
+| A-01 | The release APK builds for arm64 + armv7 and is signed (zipalign + apksigner verified) | ✅ |
+| A-02 | Installs and launches (process running ~2 s after launch, no crash in logcat) | ✅ |
+| A-03 | **Android backup disabled**: the package has no `ALLOW_BACKUP` flag, so app data can't go to Google Drive or another phone | ✅ |
+| A-04 | Data lives in private app storage `/data/user/0/<id>`: folder `0700`, `settings.json` and `harness.db*` `0600`, owned by the app's own Linux user | ✅ |
+| A-05 | The local API is **off by default** on phones | ✅ |
+| A-06 | In-app privacy self-check: **10 passed, 0 failed** (table below) | ✅ |
+| A-07 | Cross-check from adb: the probed packages (`com.android.webview`, `com.android.providers.contacts`, `com.android.providers.media.module`, `com.android.settings`) **are installed**, yet invisible to the app. "Not visible" therefore means app-data isolation, not absence | ✅ |
+
+| Check | Result | Evidence |
+|---|---|---|
+| Android app sandbox (private app storage) | ✅ pass | Data folder: /data/user/0/io.github.amitroy257.personalharness |
+| Cannot list other apps' private data | ✅ pass | /data/data: Permission denied (os error 13) |
+| Cannot read system data | ✅ pass | /data/system: Permission denied (os error 13) |
+| Cannot read another app's files | ✅ pass | other apps' folders are not visible to this app (Android app-data isolation): /data/data/com.android.webview, /data/data/com.google.android.webview, /data/data/com.android.chrome, /data/data/com.android.providers.contacts, /data/data/com.android.providers.media.module, /data/data/com.android.settings — at least one of these packages (the WebView provider) is always installed |
+| Keys & token at rest | ℹ️ info | Stored in private app storage (other apps cannot read it), file mode 0600 |
+| Data folder is owner-only (0700) | ✅ pass | 700 |
+| Settings & database files are owner-only (0600) | ✅ pass | 4 files checked |
+| Local API unreachable from the network | ✅ pass | connect to 10.0.2.16:4141 refused |
+| Local API rejects requests without the token | ✅ pass | unauthenticated request -> HTTP 401 |
+| Local API rejects foreign Host headers (DNS rebinding) | ✅ pass | Host: attacker.example -> HTTP 403 |
+| Web pages cannot call the local API (no CORS) | ✅ pass | no Access-Control-Allow-Origin header |
+| No telemetry | ℹ️ info | No analytics or crash reporting. Public ranking data is on (anonymous GETs). |
+== cross-check: probed packages really exist (so 'not visible' means isolation, not absence)
+com.android.providers.media.module
 
 ### 4.11 Code-quality gates (block merges)
 
@@ -225,6 +254,7 @@ Found while testing sync and the phone version:
 | **F7** | Medium | A new device received the synced provider keys but never fetched those providers' model lists, so it had keys but no models | Refresh model lists of providers that arrive through sync | `sync_e2e` + live UI run |
 | **F8** | Medium (UX) | On phones, wide code blocks pushed chat bubbles off-screen, and the 7th tab was unreachable. The first automated check missed it because it only measured page overflow; it now measures every bubble and the message pane | Shrinkable grid items, code scrolls inside its block, short tab labels | Playwright overflow checks |
 | **F9** | High (privacy, preventive) | Android backup could copy app data (including API keys) to cloud storage or another phone | Manifest hardened (`allowBackup=false`); the emulator test asserts the flag is off | `android_smoke.sh` |
+| **F10** | Medium (test validity) | Sandbox "escape" probes counted *any* error as a pass, so a probe of a non-existent folder "passed" without proving anything (seen on Android) | Only an OS *permission denied* counts as a pass. Android's isolation-hidden folders count as isolated only because CI cross-checks via adb that those packages exist | `selfcheck::probes_only_pass_on_permission_denied` + A-07 |
 
 Found and fixed earlier, during development testing:
 - "Hot" ranking was empty when Hugging Face or OpenRouter were unreachable. Fixed with a fallback to the date each model first appeared on the leaderboard.
