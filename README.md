@@ -11,6 +11,8 @@ It also **ranks the models you can actually use** (strongest, most used, hot and
 
 <p align="center"><img src="src-tauri/app-icon.png" width="96" alt="app icon"></p>
 
+**⬇️ Download: [latest release](https://github.com/amitroy257/personalharness/releases/latest)**: macOS DMG · Windows installer (.exe / .msi) · Android APK
+
 ## Quality & testing
 
 Every push is tested on **Linux, macOS and Windows**. The macOS and Windows jobs install the real app, launch it, and make it attack its own privacy guarantees. Each run's **Summary** tab on GitHub shows a pass/fail table with evidence. Full SQA report: **[docs/TEST_REPORT.md](docs/TEST_REPORT.md)**.
@@ -47,7 +49,7 @@ Run the same privacy checks on your own machine: **Privacy & Settings → Run pr
 
 Every push builds a universal DMG (Apple Silicon and Intel) on GitHub Actions:
 
-1. Open **Actions → "macOS app (DMG)"**, pick the latest green run, and download the **PersonalHarness-macOS-universal** artifact (a zip containing the `.dmg`). Tagged versions (`v*`) also attach the DMG to a **GitHub Release**.
+1. Download **`PersonalHarness-<version>-macOS-universal.dmg`** from the [latest release](https://github.com/amitroy257/personalharness/releases/latest). Builds of every push are also available under **Actions → "macOS app (DMG)"**.
 2. Open the DMG and drag **Personal Harness** to **Applications**.
 3. The app is ad-hoc signed, not notarized: there is no paid Apple Developer ID. The first time you open it, macOS will block it. Do one of the following:
    - Right-click the app, choose **Open**, then **Open** again; or
@@ -60,8 +62,8 @@ Closing the window leaves the app running in the **menu bar**, so the local API 
 
 Every push also builds Windows x64 installers (Windows 10 and 11; also runs on Windows on ARM through emulation):
 
-1. Open **Actions → "Windows app (installer)"**, pick the latest green run, and download **PersonalHarness-Windows-x64**. Tagged versions attach the installers to the **GitHub Release**.
-2. Run **`Personal Harness_0.1.0_x64-setup.exe`**. It installs for your user only, with no administrator prompt. An `.msi` is also provided if you prefer it, for example for managed installs.
+1. Download **`PersonalHarness-<version>-Windows-x64-setup.exe`** from the [latest release](https://github.com/amitroy257/personalharness/releases/latest). Builds of every push are also available under **Actions → "Windows app (installer)"**.
+2. Run the setup `.exe`. It installs for your user only, with no administrator prompt. An `.msi` is also provided if you prefer it, for example for managed installs.
 3. The installer is not code-signed (that needs a paid certificate), so **SmartScreen** may say "Windows protected your PC". Click **More info → Run anyway**.
 
 Closing the window keeps the app running in the **system tray** (near the clock), so the local API stays available. Left-click the tray icon to reopen the window; right-click it for **Quit**. Opening the app again from the Start menu brings back the running instance rather than starting a second copy. The installer adds the Microsoft Edge WebView2 runtime if it is missing (it is preinstalled on Windows 10/11).
@@ -70,8 +72,8 @@ Closing the window keeps the app running in the **system tray** (near the clock)
 
 Every push also builds an Android APK for 64-bit and 32-bit ARM phones (Android 7+):
 
-1. Open **Actions → "Android app (APK)"**, pick the latest green run, and download **PersonalHarness-Android** (a zip containing the `.apk`). Tagged versions attach it to the **GitHub Release**.
-2. Copy the `.apk` to your phone and open it. Android asks you to allow installs from that app (Files or Chrome) once. Then tap **Install**.
+1. On your phone, download **`PersonalHarness-<version>-Android.apk`** from the [latest release](https://github.com/amitroy257/personalharness/releases/latest). Builds of every push are also available under **Actions → "Android app (APK)"**.
+2. Open the downloaded `.apk`. Android asks you to allow installs from that app (Files or Chrome) once. Then tap **Install**.
 3. Optional: sign in under **Sync** to bring over your chats, providers and keys from your computer (see below).
 
 On phones the local API is off by default, because other phone apps rarely need it. You can turn it on under **API**.
@@ -218,3 +220,14 @@ src-tauri             App shell (macOS, Windows, Android): window, menu bar / tr
 src                   React UI (Chat, Rankings, Models, Providers, Local API, Privacy & Settings)
 scripts               Baseline leaderboard generator, icon generator
 ```
+
+## Publishing a release
+
+Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`), commit, then:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The **Release** workflow builds and smoke-tests the macOS, Windows and Android apps on real runners. Only if all of them pass does it publish a GitHub Release with the DMG, setup `.exe`, `.msi`, APK and `SHA256SUMS.txt`.

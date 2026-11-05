@@ -1,0 +1,112 @@
+name: Release
+
+# Push a version tag to publish a release with every installer:
+#   git tag v0.1.0 && git push origin v0.1.0
+# Each platform is built and smoke-tested on a real runner; the release is
+# only published if all of them pass.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the app version
+        run: |
+          APP="v$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          echo "tag: $GITHUB_REF_NAME, app version: $APP"
+          test "$GITHUB_REF_NAME" = "$APP" || { echo "::error::Tag $GITHUB_REF_NAME does not match app version $APP in src-tauri/tauri.conf.json"; exit 1; }
+
+  macos:
+    needs: check
+    uses: ./.github/workflows/macos.yml
+
+  windows:
+    needs: check
+    uses: ./.github/workflows/windows.yml
+
+  android:
+    needs: check
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
+
+  publish:
+    name: Publish GitHub Release
+    needs: [macos, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect installers with clean names + checksums
+        env:
+          SIGNED_APK: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          pick() { f=$(find artifacts -type f -name "$1" | head -1); [ -n "$f" ] || { echo "::error::missing $1"; exit 1; }; cp "$f" "release/$2"; }
+          pick '*.dmg'        "PersonalHarness-${VER}-macOS-universal.dmg"
+          pick '*-setup.exe'  "PersonalHarness-${VER}-Windows-x64-setup.exe"
+          pick '*.msi'        "PersonalHarness-${VER}-Windows-x64.msi"
+          pick '*.apk'        "PersonalHarness-${VER}-Android.apk"
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          ls -la release
+          cat release/SHA256SUMS.txt
+
+          if [ "$SIGNED_APK" = "true" ]; then
+            APK_NOTE="Signed with the project's release key, so future versions install as normal updates."
+          else
+            APK_NOTE="Signed with a temporary key: to install a later version you will need to uninstall this one first (sign in to **Sync** beforehand and your data comes back)."
+          fi
+          REPO="https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}"
+          cat > NOTES.md <<NOTES
+          ## Downloads
+
+          | Platform | File | Notes |
+          |---|---|---|
+          | 🍎 **macOS** 11+ (Apple Silicon + Intel) | \`PersonalHarness-${VER}-macOS-universal.dmg\` | Open, drag to Applications. First launch: right-click → **Open** (not notarized). |
+          | 🪟 **Windows** 10/11 (x64) | \`PersonalHarness-${VER}-Windows-x64-setup.exe\` | Per-user install, no admin needed. SmartScreen: **More info → Run anyway** (not code-signed). |
+          | 🪟 Windows (MSI) | \`PersonalHarness-${VER}-Windows-x64.msi\` | Alternative installer for managed/per-machine installs. |
+          | 🤖 **Android** 7+ (arm64 / armv7) | \`PersonalHarness-${VER}-Android.apk\` | Open on your phone and allow installs from that app once. ${APK_NOTE} |
+
+          Verify a download: compare its SHA-256 with \`SHA256SUMS.txt\` (\`shasum -a 256 <file>\` on macOS, \`Get-FileHash <file>\` on Windows).
+
+          ## What's inside
+
+          - **One local OpenAI-compatible API** over free tiers (Groq, Gemini, Mistral, Cerebras, GitHub Models, NVIDIA, Cloudflare, SambaNova, Hugging Face, Zhipu, or any OpenAI-compatible endpoint), with OpenRouter-style \`auto\` routing and fallback.
+          - **Rankings** — strongest, most used, hot, and personally best — with a recommendation and the reasons behind it.
+          - **Private by design** — macOS App Sandbox, DPAPI-encrypted keys on Windows, Android private storage with backup disabled; no telemetry.
+          - **Optional end-to-end encrypted sync** between your phone and computers through your own server ([setup guide](${REPO}/docs/SYNC_SERVER.md)).
+
+          ## Tested before release
+
+          Every installer in this release was built and launched on a real runner, and its in-app privacy self-check had to pass (sandbox escape attempts denied, keys encrypted, local API locked down) before this release was published. Full report: [docs/TEST_REPORT.md](${REPO}/docs/TEST_REPORT.md).
+          NOTES
+          sed -i 's/^          //' NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Personal Harness ${{ github.ref_name }}
+          body_path: NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            release/*.dmg
+            release/*.exe
+            release/*.msi
+            release/*.apk
+            release/SHA256SUMS.txt
